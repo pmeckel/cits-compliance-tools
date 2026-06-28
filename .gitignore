@@ -1,0 +1,14 @@
+# Auto-generated patched ASN.1 file (created at runtime by the scripts)
+*_patched.asn
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Output files
+*.kml
+*.kmz
+*_report.txt
