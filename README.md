@@ -11,8 +11,8 @@ Tools check conformance against:
 
 | Folder | Message | Use Case | Spec |
 |--------|---------|----------|------|
-| [`ivim/`](ivim/) | IVIM | IVS-TS (In-Vehicle Signage – Traffic Signs) | C-ROADS SUD02, MP 4.2.2.x |
-| `denm/` | DENM | HLN-AZ (Hazardous Location Notification) | *(planned)* |
+| [`ivim/`](ivim/) | IVIM | IVS-TS (In-Vehicle Signage – Traffic Signs) | C-ROADS Release 3.2.0 |
+| `denm/` | DENM | Future DENM based use cases (RWW, HLN) | *(planned)* |
 
 ## Requirements
 
