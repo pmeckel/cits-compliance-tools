@@ -6,8 +6,8 @@ Python tools for parsing, visualizing, and compliance-checking
 Applicable specifications:
 - **ISO TS 19321** — IVI (In-vehicle Information) data structures
 - **ETSI TS 103 301** — IVIM message profile
-- **C-ROADS SUD02** v3.2.0 — Service and Use Case Definitions, IVS
-- **C-ROADS MP** v3.2.0 — Message Profile, chapters 4.2.2.2, 4.2.2.3, 4.2.2.8
+- **C-ROADS Service and Use Case Definitions** v3.2.0 — Message profile requirements for IVS-TS
+- **C-ROADS Message Profile** v3.2.0 — Message Profile for IVS-TS (chapters 4.2.2.2, 4.2.2.3, 4.2.2.8)
 
 ---
 
@@ -43,7 +43,7 @@ python ivim_to_kml.py file1.pcap file2.pcap -o combined.kml
 
 ### `ivim_croads_check.py` — C-ROADS IVS Compliance Checker
 
-Checks each unique IVIM against the C-ROADS IVS profile (Release 3.2.0) and
+Checks each unique IVIM in a PCAP file against the C-ROADS In-Vehicle Signage - Traffic signs (IVS-TS) profile (Release 3.2.0) and
 produces a structured text report with PASS / FAIL / WARN / N/A / SKIP per requirement.
 
 **Covered chapters**
