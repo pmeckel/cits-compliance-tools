@@ -18,7 +18,7 @@ from pathlib import Path
 
 import asn1tools
 
-# ─── Constants (shared with ivim_to_kml.py / ivim_croads_check.py) ────────────
+# ─── Constants (shared with ivim_to_kml.py / ivs-ts/ivs_ts_croads_check.py) ──
 
 BTP_IVIM_PORT = b'\x07\xd6'   # BTP destination port 2006 = IVIM
 DEFAULT_ASN_DIR = Path(__file__).parent / 'ASN'

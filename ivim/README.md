@@ -1,13 +1,25 @@
-# IVIM Tools — IVS-TS (In-Vehicle Signage – Traffic Signs)
+# IVIM Tools
 
-Python tools for parsing, visualizing, and compliance-checking
-**IVIM** (In-Vehicle Information Message) captures from ITS-G5 PCAP files.
+Python tools for parsing and visualizing **IVIM** (In-Vehicle Information Message)
+captures from ITS-G5 PCAP files.
 
-Applicable specifications:
+Applicable base specifications:
 - **ISO TS 19321** — IVI (In-vehicle Information) data structures
 - **ETSI TS 103 301** — IVIM message profile
-- **C-ROADS Service and Use Case Definitions** v3.2.0 — Message profile requirements for IVS-TS
-- **C-ROADS Message Profile** v3.2.0 — Message Profile for IVS-TS (chapters 4.2.2.2, 4.2.2.3, 4.2.2.8)
+
+The IVIM message carries several distinct C-ROADS use cases (see below). The
+tools in this top-level folder (`ivim_to_kml.py`, `ivim_zone_count.py`) are
+generic and work across all of them; use-case-specific compliance checkers
+live in their own subfolder.
+
+---
+
+## Use Cases
+
+| Folder | Use Case | Status | Spec |
+|--------|----------|--------|------|
+| [`ivs-ts/`](ivs-ts/) | IVS-TS (In-Vehicle Signage – Traffic Signs) | ✅ implemented | C-ROADS Release 3.2.0 |
+| `ivs-ft/` | IVS-FT (In-Vehicle Signage – Free Text) | *(planned)* | C-ROADS Release 3.2.0 |
 
 ---
 
@@ -41,41 +53,6 @@ python ivim_to_kml.py file1.pcap file2.pcap -o combined.kml
 
 ---
 
-### `ivim_croads_check.py` — C-ROADS IVS Compliance Checker
-
-Checks each unique IVIM in a PCAP file against the C-ROADS In-Vehicle Signage - Traffic signs (IVS-TS) profile (Release 3.2.0) and
-produces a structured text report with PASS / FAIL / WARN / N/A / SKIP per requirement.
-
-**Covered chapters**
-| Chapter | Content |
-|---------|---------|
-| MP 4.2.2.2 | IVIM general elements (IviManagementContainer, GLC, RCC) |
-| MP 4.2.2.3 | IVS-specific requirements (GIV, zone lengths, RSCodes) |
-| MP 4.2.2.8 | Cancellation IVIM profile (reduced requirement set) |
-| SUD 2.2.1.1 | IVS-TS use case requirements |
-
-**Usage**
-```bash
-python ivim_croads_check.py capture.pcap
-python ivim_croads_check.py capture.pcap -o report.txt
-python ivim_croads_check.py file1.pcap file2.pcap -o combined_report.txt
-```
-
-**Report structure**
-```
-OVERALL TOTALS
-KEY FINDINGS  (most frequent FAIL / WARN across all IVIMs)
---- per IVIM ---
-  [IviManagementContainer]
-  [GeographicLocationContainer]
-  [RoadConfigurationContainer]
-  [GeneralIviContainer (IVS)]
-  [SUD 2.2.1.1 Requirements]
-  Summary: X PASS  Y FAIL  Z WARN  ...
-```
-
----
-
 ### `ivim_zone_count.py` — Zone Counter
 
 Quick summary of how many detection, awareness, and relevance zones each IVIM
@@ -98,9 +75,19 @@ TOTAL                          2          0          1
 
 ---
 
+## Use-Case Compliance Checkers
+
+Compliance checking against a specific C-ROADS use case profile (e.g. IVS-TS)
+lives in its own subfolder, since each use case has its own set of
+requirements, report format, and terminology. See [`ivs-ts/README.md`](ivs-ts/README.md)
+for the currently implemented checker.
+
+---
+
 ## ASN.1 Files
 
-The `ASN/` folder contains the ASN.1 schema files required to decode IVIM messages:
+The `ASN/` folder contains the ASN.1 schema files required to decode IVIM messages,
+shared by all tools and use-case checkers in this folder tree:
 
 | File | Source |
 |------|--------|

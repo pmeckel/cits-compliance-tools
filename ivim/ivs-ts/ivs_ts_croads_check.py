@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """
-IVIM C-ROADS IVS Profile Compliance Checker
+IVS-TS (In-Vehicle Signage – Traffic Signs) C-ROADS Compliance Checker
 C-Roads Release 3.2.0
 
-Checks IVIM messages extracted from PCAP files against the C-ROADS IVS profile
-requirements defined in:
+Checks IVIM messages extracted from PCAP files against the C-ROADS IVS-TS
+use case profile requirements defined in:
   - C-Roads_WG2_TF3_C-ITS MessageProfiles_3.2.0
       chapter 4.2.2.2  – IVIM general elements
-      chapter 4.2.2.3  – IVS-specific requirements
+      chapter 4.2.2.3  – IVS-TS-specific requirements
       chapter 4.2.2.8  – IVIM profile for cancellation (iviStatus=2)
   - C_Roads_WG2_TF2_Service_and_Use_Case_Definitions_02_IVS_3.2.0
       chapter 2.2.1.1  – IVS-TS use case requirements
+
+Note: IVS-TS is one of several C-ROADS use cases carried by the IVIM message
+(others include IVS-FT and, in future, additional IVIM-based use cases). This
+script checks IVS-TS specifically; see sibling folders under ivim/ for other
+use-case checkers as they are added.
 
 For each unique IVIM (identified by iviIdentificationNumber) the script reports
 for every requirement whether it is:
@@ -20,12 +25,12 @@ for every requirement whether it is:
   N/A   – not applicable to this specific IVIM
   SKIP  – out of scope for automated ASN.1-level checking
 
-Reuses PCAP parsing and ASN.1 compilation from ivim_to_kml.py.
+Reuses PCAP parsing and ASN.1 compilation from ../ivim_to_kml.py.
 
 Usage:
-    python ivim_croads_check.py SingleIVIM.pcap
-    python ivim_croads_check.py AllCaptures.pcap -o report.txt
-    python ivim_croads_check.py *.pcap -o combined_report.txt
+    python ivs_ts_croads_check.py SingleIVIM.pcap
+    python ivs_ts_croads_check.py AllCaptures.pcap -o report.txt
+    python ivs_ts_croads_check.py *.pcap -o combined_report.txt
 """
 
 import argparse
@@ -70,7 +75,7 @@ IVI_TYPE_MAPPING = {
     # supplementaryPanel → type depends on main sign, checked as N/A
 }
 
-DEFAULT_ASN_DIR = Path(__file__).parent / 'ASN'
+DEFAULT_ASN_DIR = Path(__file__).parent.parent / 'ASN'
 ASN_FILES = [
     'ETSI-ITS-CDD.asn',
     'ISO 17573-3 EfcDataDictionary V1.6.asn',
@@ -103,7 +108,7 @@ class IvimReport:
         return counts
 
 
-# ─── ASN.1 / PCAP helpers (reused from ivim_to_kml.py) ───────────────────────
+# ─── ASN.1 / PCAP helpers (reused from ../ivim_to_kml.py) ────────────────────
 
 def ensure_patched_asn(asn_dir: Path) -> None:
     patched = asn_dir / 'ISO19321IVIv3.1_patched.asn'
@@ -1265,7 +1270,7 @@ def format_report(reports: list, source_files: list) -> str:
 
     # ── Report header ─────────────────────────────────────────────────────────
     lines.append('=' * w)
-    lines.append('  C-ROADS IVS IVIM COMPLIANCE REPORT')
+    lines.append('  C-ROADS IVS-TS IVIM COMPLIANCE REPORT')
     lines.append(f'  Generated : {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")}')
     lines.append(f'  Source    : {", ".join(source_files)}')
     lines.append(f'  IVIMs     : {n_ivim} unique iviIdentificationNumber(s)')
@@ -1452,14 +1457,15 @@ def process(pcap_files: list, asn_dir: Path, output: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description='Check IVIM messages against C-Roads IVS profile (Release 3.2.0).',
+        description='Check IVIM messages against the C-Roads IVS-TS use case profile '
+                    '(Release 3.2.0).',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__)
     parser.add_argument('pcap', nargs='+', metavar='PCAP',
                         help='Input PCAP file(s)')
-    parser.add_argument('-o', '--output', default='ivim_croads_report',
+    parser.add_argument('-o', '--output', default='ivs_ts_croads_report',
                         metavar='FILE',
-                        help='Output report file (default: ivim_croads_report.txt)')
+                        help='Output report file (default: ivs_ts_croads_report.txt)')
     parser.add_argument('--asn-dir', type=Path, default=DEFAULT_ASN_DIR,
                         metavar='DIR',
                         help=f'Directory with ASN.1 files (default: {DEFAULT_ASN_DIR})')

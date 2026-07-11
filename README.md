@@ -9,10 +9,14 @@ Tools check conformance against:
 
 ## Message Types
 
-| Folder | Message | Use Case | Spec |
-|--------|---------|----------|------|
-| [`ivim/`](ivim/) | IVIM | IVS-TS (In-Vehicle Signage – Traffic Signs) | C-ROADS Release 3.2.0 |
+| Folder | Message | Use Cases | Spec |
+|--------|---------|-----------|------|
+| [`ivim/`](ivim/) | IVIM | [`ivs-ts/`](ivim/ivs-ts/) (implemented), `ivs-ft/` (planned) | C-ROADS Release 3.2.0 |
 | `denm/` | DENM | Future DENM based use cases (RWW, HLN) | *(planned)* |
+
+A single message type can carry multiple C-ROADS use cases (e.g. IVIM carries
+IVS-TS and IVS-FT), each with its own compliance profile and checker script.
+See the message-type README for the full use-case breakdown.
 
 ## Requirements
 
