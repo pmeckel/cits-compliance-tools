@@ -55,20 +55,72 @@ def compile_asn(asn_dir: Path):
 
 # ─── PCAP helpers ──────────────────────────────────────────────────────────────
 
+# PCAP link-layer types this parser understands.
+LINKTYPE_ETHERNET            = 1    # pre-stripped Ethernet framing
+LINKTYPE_IEEE802_11          = 105  # raw 802.11, no radio metadata
+LINKTYPE_IEEE802_11_RADIOTAP = 127  # 802.11 + Radiotap header (common for
+                                    # 802.11p / ITS-G5 monitor-mode captures)
+
+
+def _is_its_g5_80211(pkt: bytes, has_radiotap: bool) -> bool:
+    """Check whether an IEEE 802.11 frame (optionally preceded by a Radiotap
+    header) carries an LLC/SNAP-encapsulated ITS-G5 payload (Ethertype 0x8947).
+    """
+    if has_radiotap:
+        if len(pkt) < 4:
+            return False
+        rt_len = struct.unpack('<H', pkt[2:4])[0]  # radiotap header length
+        body = pkt[rt_len:]
+    else:
+        body = pkt
+    if len(body) < 24:
+        return False
+    frame_control = struct.unpack('<H', body[0:2])[0]
+    frame_type    = (frame_control >> 2) & 0x3
+    frame_subtype = (frame_control >> 4) & 0xF
+    if frame_type != 2:  # not a Data frame
+        return False
+    hdr_len = 26 if (frame_subtype & 0x08) else 24  # QoS Data has 2 extra bytes
+    llc = body[hdr_len:hdr_len + 8]
+    if len(llc) < 8 or llc[:3] != b'\xaa\xaa\x03':  # not LLC/SNAP encapsulated
+        return False
+    return struct.unpack('>H', llc[6:8])[0] == 0x8947
+
+
 def iter_its_packets(pcap_path: str):
-    """Yield raw packet bytes for ITS-G5 (Ethertype 0x8947) frames."""
+    """Yield raw packet bytes for ITS-G5 (Ethertype 0x8947) frames.
+
+    Supports PCAP captures with Ethernet framing (linktype 1, as produced by
+    tools that strip the radio layer) as well as raw IEEE 802.11 captures,
+    with or without a Radiotap header (linktype 105 / 127, as produced by
+    802.11p / ITS-G5 monitor-mode captures).
+    """
     with open(pcap_path, 'rb') as f:
         raw = f.read()
     magic = struct.unpack('<I', raw[:4])[0]
     if magic not in (0xa1b2c3d4, 0xa1b23c4d):
         raise ValueError(f'Not a supported PCAP file (magic={hex(magic)})')
+
+    linktype = struct.unpack('<I', raw[20:24])[0]
+    if linktype not in (LINKTYPE_ETHERNET, LINKTYPE_IEEE802_11,
+                        LINKTYPE_IEEE802_11_RADIOTAP):
+        raise ValueError(
+            f'Unsupported PCAP link-layer type {linktype}. Supported: '
+            f'Ethernet ({LINKTYPE_ETHERNET}), IEEE 802.11 '
+            f'({LINKTYPE_IEEE802_11}), IEEE 802.11 + Radiotap '
+            f'({LINKTYPE_IEEE802_11_RADIOTAP}).')
+
     offset = 24
     while offset + 16 <= len(raw):
         _ts, _us, incl_len, _orig = struct.unpack('<IIII', raw[offset:offset + 16])
         pkt = raw[offset + 16:offset + 16 + incl_len]
         offset += 16 + incl_len
-        if len(pkt) >= 14 and struct.unpack('>H', pkt[12:14])[0] == 0x8947:
-            yield pkt
+        if linktype == LINKTYPE_ETHERNET:
+            if len(pkt) >= 14 and struct.unpack('>H', pkt[12:14])[0] == 0x8947:
+                yield pkt
+        else:
+            if _is_its_g5_80211(pkt, has_radiotap=(linktype == LINKTYPE_IEEE802_11_RADIOTAP)):
+                yield pkt
 
 
 def extract_ivim(pkt: bytes, db):
