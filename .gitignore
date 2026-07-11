@@ -12,3 +12,7 @@ venv/
 *.kml
 *.kmz
 *_report.txt
+
+# Local PCAP test captures (not published — may contain real-world data)
+/test-data/
+*.pcap
