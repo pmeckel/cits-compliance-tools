@@ -19,7 +19,11 @@ live in their own subfolder.
 | Folder | Use Case | Status | Spec |
 |--------|----------|--------|------|
 | [`ivs-ts/`](ivs-ts/) | IVS-TS (In-Vehicle Signage – Traffic Signs) | ✅ implemented | C-ROADS Release 3.2.0 |
+| [`ng-tsa/`](ng-tsa/) | NG-TSA (Navigation Guidance – Toll Station Approaching) | ✅ implemented | C-ROADS Release 3.2.0 |
 | `ivs-ft/` | IVS-FT (In-Vehicle Signage – Free Text) | *(planned)* | C-ROADS Release 3.2.0 |
+
+NG-TSA builds on top of IVS-TS: it reuses every IVS-TS requirement and adds
+its own use-case-specific checks (see [`ng-tsa/README.md`](ng-tsa/README.md)).
 
 ---
 
