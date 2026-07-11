@@ -7,10 +7,14 @@ Applicable base specifications:
 - **ISO TS 19321** — IVI (In-vehicle Information) data structures
 - **ETSI TS 103 301** — IVIM message profile
 
-The IVIM message carries several distinct C-ROADS use cases (see below). The
-tools in this top-level folder (`ivim_to_kml.py`, `ivim_zone_count.py`) are
-generic and work across all of them; use-case-specific compliance checkers
-live in their own subfolder.
+The IVIM message carries several distinct C-ROADS use cases (see below).
+
+- **`ivim_to_kml.py`** and **`ivim_zone_count.py`** (this folder) are
+  **use-case-agnostic**: they parse and visualize the raw GLC/GIV zone
+  geometry of any IVIM, regardless of which C-ROADS use case it implements.
+- **Compliance checkers are use-case-specific** and live in their own
+  subfolder (e.g. [`ivs-ts/`](ivs-ts/), [`ng-tsa/`](ng-tsa/)), since each use
+  case has its own set of requirements, report format, and terminology.
 
 ---
 
@@ -28,6 +32,8 @@ its own use-case-specific checks (see [`ng-tsa/README.md`](ng-tsa/README.md)).
 ---
 
 ## Tools
+
+*The tools below work for **any** IVIM, regardless of its C-ROADS use case.*
 
 ### `ivim_to_kml.py` — PCAP → KML/KMZ Visualizer
 
@@ -81,10 +87,14 @@ TOTAL                          2          0          1
 
 ## Use-Case Compliance Checkers
 
-Compliance checking against a specific C-ROADS use case profile (e.g. IVS-TS)
-lives in its own subfolder, since each use case has its own set of
-requirements, report format, and terminology. See [`ivs-ts/README.md`](ivs-ts/README.md)
-for the currently implemented checker.
+*Unlike the tools above, compliance checking is **use-case-specific***: each
+use case has its own requirements, report format, and terminology, so each
+gets its own subfolder and checker script.
+
+| Use case | Checker | Docs |
+|----------|---------|------|
+| IVS-TS | [`ivs-ts/ivs_ts_croads_check.py`](ivs-ts/ivs_ts_croads_check.py) | [`ivs-ts/README.md`](ivs-ts/README.md) |
+| NG-TSA | [`ng-tsa/ng_tsa_croads_check.py`](ng-tsa/ng_tsa_croads_check.py) | [`ng-tsa/README.md`](ng-tsa/README.md) |
 
 ---
 

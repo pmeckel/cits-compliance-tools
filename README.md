@@ -15,8 +15,11 @@ Tools check conformance against:
 | `denm/` | DENM | Future DENM based use cases (RWW, HLN) | *(planned)* |
 
 A single message type can carry multiple C-ROADS use cases (e.g. IVIM carries
-IVS-TS, NG-TSA and IVS-FT), each with its own compliance profile and checker
-script. See the message-type README for the full use-case breakdown.
+IVS-TS, NG-TSA and IVS-FT). Within each message-type folder, parsing/visualization
+tools (e.g. PCAP → KML converters, zone counters) are **use-case-agnostic** and
+work on any message of that type, while **compliance checkers are use-case-specific**
+and live in their own subfolder, since each use case has its own requirements
+and report format. See the message-type README for the full breakdown.
 
 ## Requirements
 
