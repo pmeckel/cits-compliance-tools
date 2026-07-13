@@ -146,20 +146,27 @@ def extract_ivim(pkt: bytes, db):
 
 def count_zones(ivim: dict) -> dict:
     """
-    Return zone counts per GicPart from the GeneralIviContainer.
+    Return the number of *unique* zoneIds referenced as detection, awareness,
+    and relevance zones across all GicParts of the GeneralIviContainer.
     Result: {'detection': int, 'awareness': int, 'relevance': int}
-    Sums across all GicParts (a single IVIM may carry multiple GicParts,
-    each referencing its own sets of zone IDs).
+
+    A zoneId referenced multiple times within the same category (whether by
+    the same GicPart or across several GicParts) is counted once. A zoneId
+    referenced under different categories (e.g. both as a detection zone and
+    a relevance zone) is counted once per category, since those are distinct
+    roles for the same underlying GLC zone.
     """
     optional = ivim['ivi'].get('optional') or []
-    det = awa = rel = 0
+    det_ids: set = set()
+    awa_ids: set = set()
+    rel_ids: set = set()
     for ctype, cdata in optional:
         if ctype == 'giv':
             for gic_part in cdata:
-                det += len(gic_part.get('detectionZoneIds') or [])
-                awa += len(gic_part.get('driverAwarenessZoneIds') or [])
-                rel += len(gic_part.get('relevanceZoneIds') or [])
-    return {'detection': det, 'awareness': awa, 'relevance': rel}
+                det_ids.update(gic_part.get('detectionZoneIds') or [])
+                awa_ids.update(gic_part.get('driverAwarenessZoneIds') or [])
+                rel_ids.update(gic_part.get('relevanceZoneIds') or [])
+    return {'detection': len(det_ids), 'awareness': len(awa_ids), 'relevance': len(rel_ids)}
 
 
 # ─── Main ──────────────────────────────────────────────────────────────────────
