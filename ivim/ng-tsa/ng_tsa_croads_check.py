@@ -366,6 +366,7 @@ def format_report(reports: list, source_files: list) -> str:
         'MP_Req_0109 (1)': 'lane direction ≠ sameDirection(0)',
         'MP_Req_0111 (1)': 'laneType not in C-Roads valid set',
         'MP_Req_0113 (1)': 'no GeneralIviContainer (giv) present',
+        'MP_Req_0121 (1)': 'no relevanceZoneIds – GicPart has no dedicated relevance zone',
         'MP_Req_0114 (1)': 'RSCode count exceeds 4 (1 main + 3 subsigns)',
         'MP_Req_0123 (1)': 'GIV direction ≠ sameDirection(0)',
         'MP_Req_0138 (1)': 'RSCode.code choice ≠ iso14823',

@@ -485,6 +485,7 @@ def check_ivim_cancellation(ivim: dict) -> IvimReport:
     _na_giv = 'N/A for cancellation IVIM – GIV not required (MP 4.2.2.8)'
     for rid, path in [
         ('MP_Req_0113 (1)', 'optional.giv'),
+        ('MP_Req_0121 (1)', 'optional.giv.relevanceZoneIds'),
         ('MP_Req_0114 (1)', 'optional.giv GicPart: roadSignCodes'),
         ('MP_Req_0123 (1)', 'optional.giv.direction'),
         ('MP_Req_0138 (1)', 'optional.giv.RSCode.code'),
@@ -859,6 +860,20 @@ def check_ivim(ivim: dict) -> IvimReport:
         rel_ids = list(gic_part.get('relevanceZoneIds') or [])
         awa_ids = list(gic_part.get('driverAwarenessZoneIds') or [])
         rsc     = list(gic_part.get('roadSignCodes') or [])
+
+        # MP_Req_0121: relevanceZoneIds shall be present – the relevance zone
+        # shall represent the complete road segment where the traffic rules
+        # indicated by this GicPart are applicable
+        rid  = 'MP_Req_0121 (1)'
+        path = f'optional.giv.relevanceZoneIds (GicPart {gic_idx+1})'
+        if not rel_ids:
+            R(_fail(rid, 'REQ', path,
+                    f'GicPart {gic_idx+1}: no relevanceZoneIds – at least one zone '
+                    'must be dedicated as the relevance zone (representing the '
+                    'complete road segment where this GicPart\'s traffic rules apply)'))
+        else:
+            R(_pass(rid, 'REQ', path,
+                    f'GicPart {gic_idx+1}: relevanceZoneIds = {rel_ids}'))
 
         # MP_Req_0114: one GicPart per traffic sign (max 1 main + 3 subsigns via RSCode)
         rid  = 'MP_Req_0114 (1)'
@@ -1306,6 +1321,7 @@ def format_report(reports: list, source_files: list) -> str:
         'MP_Req_0109 (1)': 'lane direction ≠ sameDirection(0)',
         'MP_Req_0111 (1)': 'laneType not in C-Roads valid set',
         'MP_Req_0113 (1)': 'no GeneralIviContainer (giv) present',
+        'MP_Req_0121 (1)': 'no relevanceZoneIds – GicPart has no dedicated relevance zone',
         'MP_Req_0114 (1)': 'RSCode count exceeds 4 (1 main + 3 subsigns)',
         'MP_Req_0123 (1)': 'GIV direction ≠ sameDirection(0)',
         'MP_Req_0138 (1)': 'RSCode.code choice ≠ iso14823',
