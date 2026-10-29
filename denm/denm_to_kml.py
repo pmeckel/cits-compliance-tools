@@ -9,6 +9,10 @@ KML/KMZ files for visualization in Google Earth, Google Maps, OpenStreetMap, etc
 Each actionId (originatingStationId + sequenceNumber) appears exactly once in
 the output KML (first occurrence), even if the PCAP contains many repetitions.
 
+The description of each eventPosition placemark states the event type with
+cause code / sub cause code and their meaning (names read from the CDD ASN.1
+file), e.g. "3 roadworks / 4 shortTermStationaryRoadworks".
+
 The DENM eventPosition takes the role of the IVIM referencePosition and is
 labeled with the actionId ("originatingStationId/sequenceNumber"). All deltas
 are cumulative, starting at the eventPosition.
@@ -53,6 +57,7 @@ from pathlib import Path
 
 from denm_count import (ASN_FILES, DEFAULT_ASN_DIR, compile_asn, expand_pcaps,
                         extract_denm, iter_its_packets)
+from denm_common import describe_event_type, denm_event_type, load_cause_names
 from ivim_to_kml import add_kml_styles, coords_to_kml_str, pretty_print_kml
 
 # ETSI coordinate scale: raw integer → degrees (10^-7 degrees per unit)
@@ -102,7 +107,7 @@ def circle_points(lat: float, lon: float, radius_m: float,
 
 # ─── DENM → record ────────────────────────────────────────────────────────────
 
-def build_record(denm: dict) -> dict:
+def build_record(denm: dict, names: dict) -> dict:
     """Extract everything needed for the KML from one decoded DENM."""
     payload = denm['denm']
     mgmt = payload['management']
@@ -148,6 +153,10 @@ def build_record(denm: dict) -> dict:
         'zones': zones,
         'awareness': awareness,
         'event_type': event_type,
+        'cause': denm_event_type(denm, names),
+        'linked_cause': (describe_event_type(situation['linkedCause'], names)
+                         if situation is not None and situation.get('linkedCause')
+                         else None),
         'terminated': 'termination' in mgmt,
         'station_type': mgmt.get('stationType'),
     }
@@ -183,8 +192,11 @@ def build_kml(records: dict, mode: str = 'lines') -> ET.Element:
         pm = ET.SubElement(folder, 'Placemark')
         ET.SubElement(pm, 'name').text = action_id
         n_traces = sum(1 for z in rec['zones'] if z['kind'] == 'detection')
-        desc = [f'Event type: {rec["event_type"]} event',
-                f'Traces: {n_traces}']
+        desc = [f'Event type (cause / sub cause): {rec["cause"]}']
+        if rec['linked_cause']:
+            desc.append(f'Linked cause: {rec["linked_cause"]}')
+        desc += [f'Event geometry: {rec["event_type"]} event',
+                 f'Traces: {n_traces}']
         ez = next((z for z in rec['zones'] if z['kind'] == 'relevance'), None)
         if ez:
             desc.append(f'eventZone points: {len(ez["coords"])}')
@@ -250,6 +262,7 @@ def process(pcap_files: list, asn_dir: Path, output_path: str,
         print(f'  - {name}')
     db = compile_asn(asn_dir)
     print('ASN.1 compilation successful.')
+    names = load_cause_names(asn_dir)
 
     records: dict = {}   # (originatingStationId, sequenceNumber) -> record
 
@@ -269,7 +282,7 @@ def process(pcap_files: list, asn_dir: Path, output_path: str,
             if key in records:
                 continue  # deduplicate: keep only first occurrence
             n_new += 1
-            records[key] = build_record(denm)
+            records[key] = build_record(denm, names)
 
         print(f'  ITS-G5 packets: {n_pkt}  |  DENM decoded: {n_denm}  '
               f'|  New unique actionIds: {n_new}')
@@ -285,6 +298,12 @@ def process(pcap_files: list, asn_dir: Path, output_path: str,
     for etype, cnt in sorted(type_counts.items()):
         print(f'  {etype.capitalize()} events: {cnt}')
     print(f'  Traces: {n_traces}  |  eventZones: {n_ez}  |  Awareness circles: {n_aw}')
+    cause_counts: dict = {}
+    for rec in records.values():
+        cause_counts[rec['cause']] = cause_counts.get(rec['cause'], 0) + 1
+    print('  Event types (unique DENMs):')
+    for cause, cnt in sorted(cause_counts.items(), key=lambda x: -x[1]):
+        print(f'    {cnt:>3}  {cause}')
 
     kml_str = pretty_print_kml(build_kml(records, mode=mode))
 

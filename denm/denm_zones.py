@@ -9,6 +9,8 @@ sequenceNumber) in one or more PCAP files, prints one row per zone:
   - the number of points (items of the Path / of the eventZone)
   - the length in metres, calculated with the eventPosition as the start of
     the polyline
+  - the event type of the DENM (cause code / sub cause code with their meaning,
+    names read from the CDD ASN.1 file), shown on the first row of each actionId
 
 The DENM equivalent of the IVIM referencePosition is management.eventPosition.
 Deltas are cumulative: the first point is relative to the eventPosition, every
@@ -32,6 +34,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from denm_common import denm_event_type, load_cause_names
 from denm_count import ASN_FILES, DEFAULT_ASN_DIR, compile_asn, expand_pcaps, extract_denm, iter_its_packets
 
 _IVS_TS_DIR = Path(__file__).parent.parent / 'ivim' / 'ivs-ts'
@@ -101,9 +104,11 @@ def process(pcap_files: list, asn_dir: Path, output: str) -> None:
         emit(f'  - {name}')
     db = compile_asn(asn_dir)
     emit('ASN.1 compilation successful.')
+    names = load_cause_names(asn_dir)
 
     for pcap_file in expand_pcaps(pcap_files):
-        first_seen: dict = {}   # actionId -> (rows, has_location, terminated)
+        first_seen: dict = {}   # actionId -> (rows, has_location, terminated, event type)
+        event_types: dict = {}  # actionId -> set of event type texts seen
         n_denm = 0
 
         for pkt in iter_its_packets(pcap_file):
@@ -113,31 +118,37 @@ def process(pcap_files: list, asn_dir: Path, output: str) -> None:
             n_denm += 1
             aid = denm['denm']['management']['actionId']
             key = (aid['originatingStationId'], aid['sequenceNumber'])
+            etype = denm_event_type(denm, names)
+            event_types.setdefault(key, set()).add(etype)
             if key not in first_seen:
                 rows, has_loc = zone_rows(denm)
                 first_seen[key] = (rows, has_loc,
-                                   'termination' in denm['denm']['management'])
+                                   'termination' in denm['denm']['management'], etype)
 
         emit(f'\nFile: {Path(pcap_file).name}')
         emit(f'  DENMs decoded: {n_denm}   Unique actionIds: {len(first_seen)}\n')
         hdr = (f'  {"originatingStationId":>20}  {"sequenceNumber":>14}  {"zone":<10}  '
-               f'{"points":>6}  {"length incl. eventPos (m)":>25}')
+               f'{"points":>6}  {"length incl. eventPos (m)":>25}  '
+               f'event type (cause code / sub cause code)')
         emit(hdr)
-        emit('  ' + '-' * (len(hdr) - 2))
+        emit('  ' + '-' * (len(hdr) - 2 + 20))
 
         for key in sorted(first_seen):
-            rows, has_loc, terminated = first_seen[key]
+            rows, has_loc, terminated, etype = first_seen[key]
+            if len(event_types[key]) > 1:
+                etype += f'  (+{len(event_types[key]) - 1} other event type(s))'
             if not rows:
                 emit(f'  {key[0]:>20}  {key[1]:>14}  (no location/situation container'
-                      f'{", termination" if terminated else ""})')
+                     f'{", termination" if terminated else ""})  {etype}')
                 continue
             for n, (label, pts, length) in enumerate(rows):
                 sid = f'{key[0]:>20}' if n == 0 else ' ' * 20
                 seq = f'{key[1]:>14}' if n == 0 else ' ' * 14
+                et = f'  {etype}' if n == 0 else ''
                 if length is None:
-                    emit(f'  {sid}  {seq}  {label:<10}  {"-":>6}  {"-":>25}')
+                    emit(f'  {sid}  {seq}  {label:<10}  {"-":>6}  {"-":>25}{et}')
                 else:
-                    emit(f'  {sid}  {seq}  {label:<10}  {pts:>6}  {length:>25.1f}')
+                    emit(f'  {sid}  {seq}  {label:<10}  {pts:>6}  {length:>25.1f}{et}')
 
     out = output if output.endswith('.txt') else output + '.txt'
     with open(out, 'w', encoding='utf-8') as f:

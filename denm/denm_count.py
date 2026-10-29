@@ -3,7 +3,9 @@
 DENM Counter
 Reads one or more PCAP files, decodes all DENMs (ETSI EN 302 637-3, DENM
 release 2 ASN.1 in ./ASN) and prints how many DENMs were found and how many
-unique actionIds (originatingStationId + sequenceNumber) they contain.
+unique actionIds (originatingStationId + sequenceNumber) they contain. The
+event type of each actionId is shown with cause code / sub cause code and their
+meaning (names read from the CDD ASN.1 file), plus a summary per event type.
 
 Reuses PCAP parsing (Ethernet / 802.11 / Radiotap link types) from
 ../ivim/ivim_zone_count.py.
@@ -27,6 +29,7 @@ _IVIM_DIR = Path(__file__).parent.parent / 'ivim'
 if str(_IVIM_DIR) not in sys.path:
     sys.path.insert(0, str(_IVIM_DIR))
 from ivim_zone_count import iter_its_packets  # noqa: E402
+from denm_common import denm_event_type, load_cause_names  # noqa: E402
 
 # ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -86,11 +89,13 @@ def extract_denm(pkt: bytes, db):
 
 def process(pcap_files: list, asn_dir: Path) -> None:
     db = compile_asn(asn_dir)
+    names = load_cause_names(asn_dir)
 
     for pcap_file in expand_pcaps(pcap_files):
         n_pkt = n_denm = n_undecodable = 0
         action_ids: Counter = Counter()
         versions: Counter = Counter()
+        event_types: dict = {}              # actionId -> {event type text: DENM count}
 
         for pkt in iter_its_packets(pcap_file):
             n_pkt += 1
@@ -102,7 +107,10 @@ def process(pcap_files: list, asn_dir: Path) -> None:
             n_denm += 1
             versions[denm['header']['protocolVersion']] += 1
             aid = denm['denm']['management']['actionId']
-            action_ids[(aid['originatingStationId'], aid['sequenceNumber'])] += 1
+            key = (aid['originatingStationId'], aid['sequenceNumber'])
+            action_ids[key] += 1
+            etype = denm_event_type(denm, names)
+            event_types.setdefault(key, Counter())[etype] += 1
 
         print(f'\nFile: {Path(pcap_file).name}')
         print(f'  ITS-G5 packets            : {n_pkt}')
@@ -112,10 +120,25 @@ def process(pcap_files: list, asn_dir: Path) -> None:
         print(f'  Unique actionIds          : {len(action_ids)}')
         if action_ids:
             print()
-            print(f'  {"originatingStationId":>20}  {"sequenceNumber":>14}  {"DENMs":>6}')
-            print('  ' + '-' * 44)
-            for (station, seq), cnt in sorted(action_ids.items()):
-                print(f'  {station:>20}  {seq:>14}  {cnt:>6}')
+            hdr = (f'  {"originatingStationId":>20}  {"sequenceNumber":>14}  {"DENMs":>6}  '
+                   f'event type (cause code / sub cause code)')
+            print(hdr)
+            print('  ' + '-' * 90)
+            per_type: dict = {}             # event type -> [DENMs, actionIds]
+            for key, cnt in sorted(action_ids.items()):
+                types = event_types[key]
+                main = types.most_common(1)[0][0]
+                extra = f'  (+{len(types) - 1} other event type(s))' if len(types) > 1 else ''
+                print(f'  {key[0]:>20}  {key[1]:>14}  {cnt:>6}  {main}{extra}')
+                for t, n in types.items():
+                    entry = per_type.setdefault(t, [0, 0])
+                    entry[0] += n
+                    entry[1] += 1
+
+            print('\n  Event types:')
+            print(f'  {"DENMs":>6}  {"actionIds":>9}  event type')
+            for t, (n_d, n_a) in sorted(per_type.items(), key=lambda x: -x[1][0]):
+                print(f'  {n_d:>6}  {n_a:>9}  {t}')
 
 
 def main() -> None:
