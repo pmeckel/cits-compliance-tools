@@ -9,7 +9,7 @@ sequenceNumber) in one or more PCAP files, prints one row per zone:
   - the number of points (items of the Path / of the eventZone)
   - the length in metres, calculated with the eventPosition as the start of
     the polyline
-  - the event type of the DENM (cause code / sub cause code with their meaning,
+  - the event type of the DENM (cause(code) subcause(code), e.g. roadworks(3) unavailable(0);
     names read from the CDD ASN.1 file), shown on the first row of each actionId
 
 The DENM equivalent of the IVIM referencePosition is management.eventPosition.
@@ -129,7 +129,7 @@ def process(pcap_files: list, asn_dir: Path, output: str) -> None:
         emit(f'  DENMs decoded: {n_denm}   Unique actionIds: {len(first_seen)}\n')
         hdr = (f'  {"originatingStationId":>20}  {"sequenceNumber":>14}  {"zone":<10}  '
                f'{"points":>6}  {"length incl. eventPos (m)":>25}  '
-               f'event type (cause code / sub cause code)')
+               f'event type: cause(code) subcause(code)')
         emit(hdr)
         emit('  ' + '-' * (len(hdr) - 2 + 20))
 

@@ -37,11 +37,11 @@ Three event types are distinguished:
 | Circular event | present | present | absent | present |
 
 The **event type** (`situation.eventType`, optional `linkedCause`) is shown by all
-tools as cause code / sub cause code with their meaning, e.g.
-`3 roadworks / 4 shortTermStationaryRoadworks`. The names are read directly from
+tools as cause and sub cause, each as name and code, e.g.
+`roadworks(3) shortTermStationaryRoadworks(4)`. The names are read directly from
 `ASN/ETSI-ITS-CDD.asn` (see `denm_common.py`), so they follow the CDD version in
-use. Sub cause codes without a name in the CDD are shown as `unknown`; causes
-without named sub causes (e.g. `7 aquaplaning`) show the number only; DENMs
+use. Sub cause codes without a name in the CDD are shown as `unknown(n)`; causes
+without named sub causes (e.g. `aquaplaning(7)`) show `unnamed(n)`; DENMs
 without situation container (terminations) show `n/a (no situation container)`.
 
 A DENM is identified by its **actionId** (`originatingStationId` +
@@ -62,14 +62,14 @@ python denm_count.py ../test-data/DENM1.pcap ../test-data/DENM2.pcap
 ```
 
 ```
-  originatingStationId  sequenceNumber   DENMs  event type (cause code / sub cause code)
+  originatingStationId  sequenceNumber   DENMs  event type: cause(code) subcause(code)
   ------------------------------------------------------------------------------------------
-               1021000             553     105  3 roadworks / 4 shortTermStationaryRoadworks
-              10100194              99      63  3 roadworks / 3 slowMovingRoadMaintenance
+               1021000             553     105  roadworks(3) shortTermStationaryRoadworks(4)
+              10100194              99      63  roadworks(3) slowMovingRoadMaintenance(3)
 
   Event types:
    DENMs  actionIds  event type
-    1182          7  3 roadworks / 4 shortTermStationaryRoadworks
+    1182          7  roadworks(3) shortTermStationaryRoadworks(4)
 ```
 
 Wildcards such as `*.pcap` are expanded by the script (also in Windows `cmd`).
@@ -91,9 +91,9 @@ python denm_zones.py ../test-data/DENM1.pcap -o my_report.txt   # default: denm_
 ```
 
 ```
-  originatingStationId  sequenceNumber  zone        points  length incl. eventPos (m)  event type (cause code / sub cause code)
+  originatingStationId  sequenceNumber  zone        points  length incl. eventPos (m)  event type: cause(code) subcause(code)
   ----------------------------------------------------------------------------------------------------------------------------
-               1021000             337  trace 1          4                      607.2  3 roadworks / 0 unavailable
+               1021000             337  trace 1          4                      607.2  roadworks(3) unavailable(0)
                                         eventZone        8                      961.2
 ```
 
@@ -104,9 +104,10 @@ python denm_zones.py ../test-data/DENM1.pcap -o my_report.txt   # default: denm_
 DENM counterpart of [`../ivim/ivim_to_kml.py`](../ivim/ivim_to_kml.py) with the
 same options. Plots every unique DENM for Google Earth, Google Maps, or any GIS tool:
 
-- eventPosition labeled with the actionId (`originatingStationId/sequenceNumber`);
-  its description states the event type (cause code / sub cause code and
-  meaning), a linked cause if present, and the event geometry (point/linear/circular)
+- one folder per DENM, named `DENM <actionId> | <event type>` (e.g.
+  `DENM 1021000/407 | roadworks(3) unavailable(0)`) for easy browsing
+- eventPosition labeled `<actionId> | <event type>` (actionId = `originatingStationId/sequenceNumber`);
+  its description states the event type, a linked cause if present, and the event geometry (point/linear/circular)
 - traces (red, labeled `trace1`, `trace2`, …), eventZone (green, labeled `eventZone`)
 - awareness circle (gold) for circular events; the circle shows the
   `awarenessDistance` upper bound (`over10km` is drawn as 10 km)

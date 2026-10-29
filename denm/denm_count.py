@@ -4,8 +4,8 @@ DENM Counter
 Reads one or more PCAP files, decodes all DENMs (ETSI EN 302 637-3, DENM
 release 2 ASN.1 in ./ASN) and prints how many DENMs were found and how many
 unique actionIds (originatingStationId + sequenceNumber) they contain. The
-event type of each actionId is shown with cause code / sub cause code and their
-meaning (names read from the CDD ASN.1 file), plus a summary per event type.
+event type of each actionId is shown as cause and sub cause, name and code, e.g.
+roadworks(3) shortTermStationaryRoadworks(4) (names read from the CDD ASN.1 file), plus a summary per event type.
 
 Reuses PCAP parsing (Ethernet / 802.11 / Radiotap link types) from
 ../ivim/ivim_zone_count.py.
@@ -121,7 +121,7 @@ def process(pcap_files: list, asn_dir: Path) -> None:
         if action_ids:
             print()
             hdr = (f'  {"originatingStationId":>20}  {"sequenceNumber":>14}  {"DENMs":>6}  '
-                   f'event type (cause code / sub cause code)')
+                   f'event type: cause(code) subcause(code)')
             print(hdr)
             print('  ' + '-' * 90)
             per_type: dict = {}             # event type -> [DENMs, actionIds]

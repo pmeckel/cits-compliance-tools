@@ -9,12 +9,14 @@ KML/KMZ files for visualization in Google Earth, Google Maps, OpenStreetMap, etc
 Each actionId (originatingStationId + sequenceNumber) appears exactly once in
 the output KML (first occurrence), even if the PCAP contains many repetitions.
 
-The description of each eventPosition placemark states the event type with
-cause code / sub cause code and their meaning (names read from the CDD ASN.1
-file), e.g. "3 roadworks / 4 shortTermStationaryRoadworks".
+The folder of each DENM is named "DENM <actionId> | <event type>" for easy browsing,
+e.g. "DENM 1021000/407 | roadworks(3) unavailable(0)". The description of each
+eventPosition placemark states the event type with
+cause and sub cause, name and code (names read from the CDD ASN.1 file),
+e.g. "roadworks(3) shortTermStationaryRoadworks(4)".
 
 The DENM eventPosition takes the role of the IVIM referencePosition and is
-labeled with the actionId ("originatingStationId/sequenceNumber"). All deltas
+labeled "<actionId> | <event type>" (actionId = "originatingStationId/sequenceNumber"). All deltas
 are cumulative, starting at the eventPosition.
 
 Zones are visualized with distinct colors (same palette as the IVIM tool):
@@ -185,12 +187,12 @@ def build_kml(records: dict, mode: str = 'lines') -> ET.Element:
         ref_lat, ref_lon = rec['ref']
 
         folder = ET.SubElement(doc, 'Folder')
-        ET.SubElement(folder, 'name').text = f'DENM {action_id}'
+        ET.SubElement(folder, 'name').text = f'DENM {action_id} | {rec["cause"]}'
         ET.SubElement(folder, 'visibility').text = '1'
 
         # ── eventPosition marker (same in both modes), labeled with actionId ──
         pm = ET.SubElement(folder, 'Placemark')
-        ET.SubElement(pm, 'name').text = action_id
+        ET.SubElement(pm, 'name').text = f'{action_id} | {rec["cause"]}'
         n_traces = sum(1 for z in rec['zones'] if z['kind'] == 'detection')
         desc = [f'Event type (cause / sub cause): {rec["cause"]}']
         if rec['linked_cause']:

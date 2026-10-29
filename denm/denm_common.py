@@ -1,5 +1,5 @@
 """
-Shared DENM helpers: human-readable event types (cause code / sub cause code).
+Shared DENM helpers: human-readable event types (cause and sub cause, name and code).
 
 A decoded DENM event type looks like  {'ccAndScc': ('roadworks3', 4)}:
 the CHOICE alternative name carries the cause name and its cause code number
@@ -51,22 +51,23 @@ def event_type_info(cause_code_v2: dict, names: dict) -> tuple:
 
 
 def describe_event_type(cause_code_v2, names: dict) -> str:
-    """'3 roadworks / 4 shortTermStationaryRoadworks' (codes and meaning).
+    """'roadworks(3) shortTermStationaryRoadworks(4)' (meaning and code, cause first).
 
     None (e.g. a termination DENM without situation container) gives
     'n/a (no situation container)'. Sub cause codes without a name in the CDD
-    are shown as 'unknown'; causes without named sub causes show the number only.
+    are shown as 'unknown(n)'; causes without named sub causes show 'unnamed(n)'.
     """
     if cause_code_v2 is None:
         return 'n/a (no situation container)'
     cause_no, cause_name, sub_no, sub_name = event_type_info(cause_code_v2, names)
-    cause = f'{cause_no} {cause_name}'
     entry = names.get(cause_no)
     if sub_name:
-        return f'{cause} / {sub_no} {sub_name}'
-    if entry and not entry['subs']:
-        return f'{cause} / {sub_no}'
-    return f'{cause} / {sub_no} unknown'
+        sub = sub_name
+    elif entry and not entry['subs']:
+        sub = 'unnamed'
+    else:
+        sub = 'unknown'
+    return f'{cause_name}({cause_no}) {sub}({sub_no})'
 
 
 def denm_event_type(denm: dict, names: dict) -> str:
