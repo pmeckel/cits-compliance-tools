@@ -12,7 +12,7 @@ Tools check conformance against:
 | Folder | Message | Use Cases | Spec |
 |--------|---------|-----------|------|
 | [`ivim/`](ivim/) | IVIM | [`ivs-ts/`](ivim/ivs-ts/), [`ng-tsa/`](ivim/ng-tsa/) (implemented), `ivs-ft/` (planned) | C-ROADS Release 3.2.0 |
-| `denm/` | DENM | Future DENM based use cases (RWW, HLN) | *(planned)* |
+| [`denm/`](denm/) | DENM | Basic DENM tooling implemented (counting, zone measurement, KML); use-case compliance checkers (RWW, HLN) *(planned)* | C-ROADS Release 3.2.0 *(planned)* |
 
 A single message type can carry multiple C-ROADS use cases (e.g. IVIM carries
 IVS-TS, NG-TSA and IVS-FT). Within each message-type folder, parsing/visualization
@@ -20,6 +20,11 @@ tools (e.g. PCAP → KML converters, zone counters) are **use-case-agnostic** an
 work on any message of that type, while **compliance checkers are use-case-specific**
 and live in their own subfolder, since each use case has its own requirements
 and report format. See the message-type README for the full breakdown.
+
+## Test data
+
+Example captures (IVIM and DENM) are in [`test-data/`](test-data/); see its
+[README](test-data/README.md) for a description of each file.
 
 ## Requirements
 

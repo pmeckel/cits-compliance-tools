@@ -7,7 +7,7 @@ awareness and relevance zones defined in the GeneralIviContainer.
 
 Usage:
     python ivim_zone_count.py SingleIVIM.pcap
-    python ivim_zone_count.py AllCaptures.pcap
+    python ivim_zone_count.py AllCaptures_IVIM.pcap
     python ivim_zone_count.py file1.pcap file2.pcap
 """
 

@@ -22,8 +22,8 @@ Two output modes are available (--mode):
 
 Usage:
     python ivim_to_kml.py SingleIVIM.pcap
-    python ivim_to_kml.py AllCaptures.pcap -o all_ivis.kml
-    python ivim_to_kml.py AllCaptures.pcap --mode points -o all_ivis_pts.kml
+    python ivim_to_kml.py AllCaptures_IVIM.pcap -o all_ivis.kml
+    python ivim_to_kml.py AllCaptures_IVIM.pcap --mode points -o all_ivis_pts.kml
     python ivim_to_kml.py *.pcap --kmz -o output
     python ivim_to_kml.py capture.pcap --asn-dir /path/to/asn
 """

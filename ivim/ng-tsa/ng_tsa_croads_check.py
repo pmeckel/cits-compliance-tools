@@ -29,7 +29,7 @@ Reuses PCAP parsing, ASN.1 compilation, and all IVS-TS checks from
 
 Usage:
     python ng_tsa_croads_check.py SingleIVIM.pcap
-    python ng_tsa_croads_check.py AllCaptures.pcap -o report.txt
+    python ng_tsa_croads_check.py AllCaptures_IVIM.pcap -o report.txt
     python ng_tsa_croads_check.py *.pcap -o combined_report.txt
 """
 

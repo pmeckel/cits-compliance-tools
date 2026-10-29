@@ -29,7 +29,7 @@ Reuses PCAP parsing and ASN.1 compilation from ../ivim_to_kml.py.
 
 Usage:
     python ivs_ts_croads_check.py SingleIVIM.pcap
-    python ivs_ts_croads_check.py AllCaptures.pcap -o report.txt
+    python ivs_ts_croads_check.py AllCaptures_IVIM.pcap -o report.txt
     python ivs_ts_croads_check.py *.pcap -o combined_report.txt
 """
 
