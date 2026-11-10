@@ -186,7 +186,7 @@ connection for the map tiles):
   (`pathDeltaTime` is the time to the previous point, to the eventPosition /
   referencePosition for the first one).
 
-  Options per layer: **colour** (picker), **points** (off = line only), **time
+  Options per layer: **colour** (picker), **points** (off = line only; for the DENM also the eventZone points), **time
   labels**, **full preview** (faint dashed line of what the layer shows at the
   end of the replay) and **minimal view** with a slider for the number of
   points (1–40): only the current position and the last n points. The minimal

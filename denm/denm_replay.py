@@ -825,8 +825,7 @@ function buildStatic() {
   if (!st.station) return;
   const sid = st.station.stationId, od = opts.denm, ot = opts.dtr;
   for (const u of st.staticDenms) {
-    if (u.ez.length)
-      L.polyline([[u.lat, u.lon], ...u.ez], { color: od.ezColor, weight: 4, opacity: .85 }).addTo(staticLayers.ez);
+    drawEventZone(u, staticLayers.ez);
     u.traces.forEach((tr, ti) => {
       if (!tr.length) return;
       L.polyline([[u.lat, u.lon], ...tr.map(q => [q[0], q[1]])], { color: ot.color, weight: 3 }).addTo(staticLayers.dtr);
@@ -1088,8 +1087,20 @@ function renderEventZone(i) {   // eventZone of DENM update i
   st.ezIdx = i;
   ezLayer.clearLayers();
   const u = i >= 0 ? st.U[i] : null;
-  if (u && u.ez.length)
-    L.polyline([[u.lat, u.lon], ...u.ez], { color: opts.denm.ezColor, weight: 4, opacity: .85 }).addTo(ezLayer);
+  if (u) drawEventZone(u, ezLayer);
+}
+
+// eventZone of DENM u: line from the eventPosition through the eventZone points; with the DENM
+// option "points" also the eventZone points themselves (popup with the point number and position)
+function drawEventZone(u, group) {
+  if (!u.ez.length) return;
+  const col = opts.denm.ezColor, sid = st.station.stationId;
+  L.polyline([[u.lat, u.lon], ...u.ez], { color: col, weight: 4, opacity: .85 }).addTo(group);
+  if (!opts.denm.points) return;
+  u.ez.forEach((q, k) => L.circleMarker(q, { radius: 4, color: '#fff', weight: 1.5, fillColor: col, fillOpacity: 1 })
+    .bindPopup(`<b>DENM ${sid}/${u.seq} eventZone point ${k + 1} of ${u.ez.length}</b>` +
+               `<br>${q[0].toFixed(7)}, ${q[1].toFixed(7)}<br>${haversine(u, { lat: q[0], lon: q[1] }).toFixed(1)} m from the eventPosition`)
+    .addTo(group));
 }
 
 function renderCam(absT, denmPos) {
@@ -1225,6 +1236,7 @@ function renderLayerCards() {
       else o[opt] = inp.checked;
       if (opt === 'minimal') div.querySelector('input[data-opt=n]').disabled = !o.minimal;
       if (['points', 'labels', 'smooth', 'heading'].includes(opt)) tracks[k].reset();
+      if (k === 'denm' && opt === 'points') st.ezIdx = null;   // redraw the eventZone with/without points
       if (opt === 'smooth') updatePreviews();
       applyDisplay();
       render();
