@@ -49,6 +49,8 @@ CAM in parallel (ASN.1 in ../cam/ASN, disable with --no-cam):
   - the best candidate is selected automatically if it reaches 50/100; the
     CAM track (blue) and position are replayed in parallel with the DENM,
     with the distance between both shown in the status line
+  - optional (toggle): the pathHistory of the low frequency container of the
+    latest CAM received up to the current replay time (purple)
 
 Reuses PCAP parsing, ASN.1 compilation and DENM extraction from denm_count.py,
 the event type text from denm_common.py and the delta position helper from
@@ -153,6 +155,19 @@ def cam_record(cam: dict, rx: float, names: dict) -> tuple:
     return cam['header']['stationId'], basic['stationType'], row, incident
 
 
+def cam_path_history(cam: dict):
+    """pathHistory of the CAM low frequency container as [[lat, lon, pathDeltaTime | None], ...]
+    (cumulative from the CAM referencePosition), or None without low frequency container."""
+    params = cam['cam']['camParameters']
+    lf = params.get('lowFrequencyContainer')
+    if not lf or lf[0] != 'basicVehicleContainerLowFrequency':
+        return None
+    ph = lf[1].get('pathHistory') or []
+    ref = params['basicContainer']['referencePosition']
+    coords = cumulative_points(ref['latitude'], ref['longitude'], ph, 'pathPosition')
+    return [[round(lat, 7), round(lon, 7), pp.get('pathDeltaTime')] for (lat, lon), pp in zip(coords, ph)]
+
+
 def build_candidate(denm: dict, names: dict, st_names: dict) -> dict:
     """Everything the replay page needs from one decoded DENM."""
     payload = denm['denm']
@@ -222,11 +237,16 @@ def collect(pcap_files: list, asn_dir: Path, cam_asn_dir) -> tuple:
                 if cam is not None:
                     n_cam += 1
                     sid, stype, row, incident = cam_record(cam, rx, names)
-                    c = cams.setdefault(sid, {'stationTypeNo': stype, 'positions': [], 'incidents': {}})
+                    c = cams.setdefault(sid, {'stationTypeNo': stype, 'positions': [], 'incidents': {},
+                                              'paths': []})
                     # row[5]: index into the station's incident list (None = no special vehicle container)
                     row.append(c['incidents'].setdefault(incident, len(c['incidents']))
                                if incident else None)
                     c['positions'].append(row)
+                    path = cam_path_history(cam)
+                    if path is not None:
+                        # [rx, referencePosition lat, lon, pathHistory points]
+                        c['paths'].append([row[0], row[1], row[2], path])
                 continue
             n_denm += 1
             cand = build_candidate(denm, names, st_names)
@@ -264,11 +284,13 @@ def collect(pcap_files: list, asn_dir: Path, cam_asn_dir) -> tuple:
     for sid in sorted(cams):
         c = cams[sid]
         c['positions'].sort(key=lambda r: r[0])
+        c['paths'].sort(key=lambda p: p[0])
         cam_list.append({
             'stationId': sid,
             'stationTypeNo': c['stationTypeNo'],
             'stationType': f'{st_names.get(c["stationTypeNo"], "unknown")}({c["stationTypeNo"]})',
             'positions': c['positions'],
+            'paths': c['paths'],
             'incidents': [list(i) for i in c['incidents']],   # in index order
         })
     if cam_db is not None:
@@ -327,6 +349,8 @@ HTML_TEMPLATE = r'''<!doctype html>
   .ep-lbl::before { display:none; }
   .cam-lbl { background:#1570ef; color:#fff; border:none; font-size:11px; padding:1px 4px; }
   .cam-lbl::before { display:none; }
+  .ph-lbl { background:#7a5af8; color:#fff; border:none; font-size:11px; padding:1px 4px; }
+  .ph-lbl::before { display:none; }
   .cam { display:block; border:1px solid var(--line); border-radius:6px; padding:6px 8px; margin-bottom:6px;
          cursor:pointer; color:var(--text); }
   .cam .score { float:right; font-weight:600; font-variant-numeric: tabular-nums; }
@@ -356,6 +380,7 @@ HTML_TEMPLATE = r'''<!doctype html>
     <div id="cams" class="muted"></div>
     <label class="opt"><input type="checkbox" id="showCam" checked> show CAM in parallel</label>
     <label class="opt"><input type="checkbox" id="showCamPreview" checked> full CAM track in the DENM time window</label>
+    <label class="opt"><input type="checkbox" id="showCamPath"> CAM pathHistory (latest low frequency container)</label>
     <h2>Replay mode</h2>
     <label class="opt"><input type="radio" name="mode" value="real" checked> Real time (pathDeltaTime)</label>
     <label class="opt"><input type="radio" name="mode" value="compress"> Real time, compress pauses</label>
@@ -404,7 +429,8 @@ const layers = { preview: L.layerGroup().addTo(map), ez: L.layerGroup().addTo(ma
 let drawn = L.polyline([], { color: '#ff3b30', weight: 4 }).addTo(map);
 let mover = L.circleMarker([0, 0], { radius: 7, color: '#fff', weight: 2, fillColor: '#ff3b30', fillOpacity: 1 });
 
-const camLayers = { preview: L.layerGroup().addTo(map) };
+const camLayers = { preview: L.layerGroup().addTo(map), path: L.layerGroup().addTo(map) };
+let camPathShown = null;   // pathHistory entry currently drawn
 const camDrawn = L.polyline([], { color: '#2e90fa', weight: 4 }).addTo(map);
 const camMover = L.circleMarker([0, 0], { radius: 7, color: '#fff', weight: 2, fillColor: '#1570ef', fillOpacity: 1 })
   .bindTooltip('', { permanent: true, direction: 'left', className: 'cam-lbl', offset: [-8, 0] });
@@ -688,6 +714,7 @@ function rankCams() {
 function selectCam(r) {
   st.cam = r;
   camLayers.preview.clearLayers();
+  camLayers.path.clearLayers(); camPathShown = null;
   if (r) {
     L.polyline(r.win.map(p => [p[1], p[2]]), { color: '#84caff', weight: 2, opacity: .8, dashArray: '2 6' })
       .addTo(camLayers.preview);
@@ -696,8 +723,45 @@ function selectCam(r) {
   render();
 }
 
+// pathHistory of the latest CAM with low frequency container received up to absT.
+// Entries: [rx, referencePosition lat, lon, [[lat, lon, pathDeltaTime], ...]].
+// pathDeltaTime (10 ms) is the time to the previous point (the referencePosition for the first one).
+function renderCamPath(absT) {
+  const r = st.cam;
+  const paths = r && $('showCam').checked && $('showCamPath').checked ? (r.c.paths || []) : [];
+  let lo = -1, hi = paths.length;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (paths[m][0] <= absT) lo = m; else hi = m; }
+  const ph = lo >= 0 ? paths[lo] : null;
+  if (ph !== camPathShown) {
+    camPathShown = ph;
+    camLayers.path.clearLayers();
+    if (ph) {
+      const pts = [[ph[1], ph[2]], ...ph[3].map(p => [p[0], p[1]])];
+      L.polyline(pts, { color: '#9e77ed', weight: 3, opacity: .95 }).addTo(camLayers.path);
+      let acc = 0;
+      ph[3].forEach((p, i) => {
+        if (p[2] !== null) acc += p[2] / 100;
+        L.circleMarker([p[0], p[1]], { radius: 4, color: '#fff', weight: 1, fillColor: '#7a5af8', fillOpacity: 1 })
+          .bindPopup(`<b>CAM ${r.c.stationId} pathHistory point ${i + 1}</b><br>pathDeltaTime: ${p[2] ?? 'n/a'}` +
+                     (p[2] !== null ? ` (${(p[2] / 100).toFixed(2)} s)` : '') +
+                     `<br>${acc.toFixed(2)} s before the CAM`)
+          .addTo(camLayers.path);
+      });
+      if (ph[3].length) {
+        const lastP = ph[3][ph[3].length - 1];
+        L.circleMarker([lastP[0], lastP[1]], { radius: 0, opacity: 0 })
+          .bindTooltip(`pathHistory ${ph[3].length} pts, ${acc.toFixed(1)} s`,
+                       { permanent: true, direction: 'right', className: 'ph-lbl', offset: [6, 0] })
+          .addTo(camLayers.path);
+      }
+    }
+  }
+  return ph ? `  ·  pathHistory ${ph[3].length} pts from CAM ${(absT - ph[0]).toFixed(1)} s ago` : '';
+}
+
 function renderCam(absT, denmPos) {
   const r = st.cam, show = r && $('showCam').checked;
+  const phTxt = renderCamPath(absT);
   if (!show) {
     camDrawn.setLatLngs([]);
     if (map.hasLayer(camMover)) map.removeLayer(camMover);
@@ -709,13 +773,13 @@ function renderCam(absT, denmPos) {
   camDrawn.setLatLngs(past);
   if (!q) {
     if (map.hasLayer(camMover)) map.removeLayer(camMover);
-    return `  ·  CAM ${r.c.stationId}: no CAM at this time`;
+    return `  ·  CAM ${r.c.stationId}: no CAM at this time` + phTxt;
   }
   camMover.setLatLng([q.lat, q.lon]);
   if (!map.hasLayer(camMover)) camMover.addTo(map);
   const spd = q.row[3] !== null ? `${q.row[3].toFixed(0)} km/h` : '';
   camMover.setTooltipContent(`CAM ${r.c.stationId} ${spd}`);
-  return `  ·  CAM ${r.c.stationId} ${haversine(q, denmPos).toFixed(1)} m from DENM position${spd ? ', ' + spd : ''}`;
+  return `  ·  CAM ${r.c.stationId} ${haversine(q, denmPos).toFixed(1)} m from DENM position${spd ? ', ' + spd : ''}` + phTxt;
 }
 
 // ─── Rendering at replay time t ────────────────────────────────────────────
@@ -789,6 +853,7 @@ document.querySelectorAll('input[name=mode]').forEach(r => r.onchange = () => {
 $('cap').onchange = () => { if (mode() === 'compress') { const frac = st.t / st.total; build(); st.t = frac * st.total; render(); } };
 ['showLabels', 'showPreview', 'showEz', 'showCamPreview'].forEach(id => $(id).onchange = applyDisplay);
 $('showCam').onchange = () => { applyDisplay(); render(); };
+$('showCamPath').onchange = () => render();
 layers.points.on('layeradd', ev => { if (!$('showLabels').checked) ev.layer.closeTooltip(); });
 
 renderFilter();

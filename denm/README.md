@@ -164,6 +164,11 @@ needs an internet connection for the map tiles):
 
   A candidate is only preselected from 50/100 on; any candidate (or none) can be
   chosen manually.
+- **CAM pathHistory** (toggle, off by default): shows the `pathHistory` of the
+  latest CAM with a low frequency container received up to the current replay
+  time (purple), from the CAM referencePosition backwards; each point has a
+  popup with its `pathDeltaTime`, the end is labeled with the number of points
+  and the time span covered
 
 ```bash
 python denm_replay.py ../test-data/TrafficManager.pcap
