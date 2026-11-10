@@ -182,7 +182,9 @@ needs an internet connection for the map tiles):
 
   Defaults at start: all three layers shown with points, in the minimal view
   (DENM 8 points, CAM and CAM pathHistory 15 points), no full previews;
-  labels only for the DENM (`pathDeltaTime`); eventZone shown.
+  labels only for the DENM (`pathDeltaTime`); eventZone shown. The **Reset
+  view** button restores these defaults and the replay mode (real time, pause
+  cap 5 s) without changing the selection or the replay position.
 - **pathHistory warning**: while the shown pathHistory is implausible, a red
   banner *CAM pathHistory inconsistent / broken* is shown on the map with the
   CAM and the reason (the pathHistory itself is drawn as received). Checked on

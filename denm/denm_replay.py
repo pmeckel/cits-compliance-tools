@@ -401,6 +401,7 @@ HTML_TEMPLATE = r'''<!doctype html>
     <div id="cams" class="muted"></div>
     <h2>Visualize</h2>
     <div id="layercards"></div>
+    <button id="resetView" title="Layer options and replay mode back to the defaults">Reset view</button>
     <h2>Replay mode</h2>
     <label class="opt"><input type="radio" name="mode" value="real" checked> Real time (pathDeltaTime)</label>
     <label class="opt"><input type="radio" name="mode" value="compress"> Real time, compress pauses</label>
@@ -962,6 +963,7 @@ function applyDisplay() {
 // ─── Layer option cards ────────────────────────────────────────────────────
 function renderLayerCards() {
   const box = $('layercards');
+  box.innerHTML = '';
   for (const [k, d] of Object.entries(LAYERS)) {
     const o = opts[k], div = document.createElement('div');
     div.className = 'layer';
@@ -1019,6 +1021,17 @@ document.querySelectorAll('input[name=mode]').forEach(r => r.onchange = () => {
   build(); st.t = frac * st.total; render();
 });
 $('cap').onchange = () => { if (mode() === 'compress') { const frac = st.t / st.total; build(); st.t = frac * st.total; render(); } };
+// Reset view: layer options, replay mode and pause cap back to the defaults
+$('resetView').onclick = () => {
+  for (const [k, d] of Object.entries(LAYERS)) { Object.assign(opts[k], d.def); tracks[k].reset(); }
+  renderLayerCards();
+  const modeChanged = mode() !== 'real' || +$('cap').value !== 5;
+  document.querySelector('input[name=mode][value=real]').checked = true;
+  $('cap').value = 5;
+  if (modeChanged && st.entry) { const frac = st.total ? st.t / st.total : 0; build(); st.t = frac * st.total; }
+  applyDisplay();
+  render();
+};
 renderLayerCards();
 renderFilter();
 renderStations();
