@@ -52,7 +52,7 @@ CAM in parallel (ASN.1 in ../cam/ASN, disable with --no-cam):
 Visualize: three layers (DENM trace, CAM track, CAM pathHistory), shown
 individually or together, each with the options points (off = line only),
 time labels, full preview and a minimal view (only the last n points, slider
-1..40, default 5). The CAM pathHistory is the one of the latest CAM with low
+1..40). The CAM pathHistory is the one of the latest CAM with low
 frequency container, limited to the part from the replay start on.
 A warning banner "CAM pathHistory inconsistent / broken" is shown while the
 received pathHistory has a point with pathDeltaTime 0 or a step of more than
@@ -453,13 +453,13 @@ const camMover = L.circleMarker([0, 0], { radius: 7, color: '#fff', weight: 2, f
 const LAYERS = {
   denm: { title: 'DENM', sub: 'trace PathPoints', color: '#ff3b30', fill: '#ffb020', preview: '#ffffff',
           lblClass: 'lbl', lblText: 'pathDeltaTime',
-          def: { show: true, points: true, labels: true, preview: true, minimal: false, n: 5, ez: true } },
+          def: { show: true, points: true, labels: true, preview: false, minimal: true, n: 8, ez: true } },
   cam:  { title: 'CAM', sub: 'positions of the matched CAM station', color: '#2e90fa', fill: '#84caff', preview: '#84caff',
           lblClass: 'campt-lbl', lblText: 'time to prev. CAM',
-          def: { show: true, points: false, labels: false, preview: true, minimal: false, n: 5 } },
+          def: { show: true, points: true, labels: false, preview: false, minimal: true, n: 15 } },
   ph:   { title: 'CAM pathHistory', sub: 'from replay start', color: '#7cfc00', fill: '#3f9c0a', preview: '#c5f6a0',
           lblClass: 'ph-lbl', lblText: 'pathDeltaTime',
-          def: { show: true, points: true, labels: false, preview: false, minimal: false, n: 5 } },
+          def: { show: true, points: true, labels: false, preview: false, minimal: true, n: 15 } },
 };
 const MINIMAL_MAX = 40;
 const opts = Object.fromEntries(Object.entries(LAYERS).map(([k, d]) => [k, { ...d.def }]));

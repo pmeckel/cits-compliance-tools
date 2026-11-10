@@ -174,11 +174,15 @@ needs an internet connection for the map tiles):
 
   Options per layer: **points** (off = line only), **time labels**, **full
   preview** (faint dashed line of what the layer shows at the end of the
-  replay) and **minimal view** with a slider for the number of points (1–40,
-  default 5): only the current position and the last n points. The minimal
+  replay) and **minimal view** with a slider for the number of points (1–40):
+  only the current position and the last n points. The minimal
   DENM view also hides the eventPosition and eventZone; the minimal CAM view
   places the CAM marker on the latest received CAM instead of interpolating.
   Every point has a popup with its details.
+
+  Defaults at start: all three layers shown with points, in the minimal view
+  (DENM 8 points, CAM and CAM pathHistory 15 points), no full previews;
+  labels only for the DENM (`pathDeltaTime`); eventZone shown.
 - **pathHistory warning**: while the shown pathHistory is implausible, a red
   banner *CAM pathHistory inconsistent / broken* is shown on the map with the
   CAM and the reason (the pathHistory itself is drawn as received). Checked on
