@@ -50,9 +50,12 @@ CAM in parallel (ASN.1 in ../cam/ASN, disable with --no-cam):
     CAM track (blue) and position are replayed in parallel with the DENM,
     with the distance between both shown in the status line
   - optional (toggle): the pathHistory of the low frequency container of the
-    latest CAM received up to the current replay time (purple)
+    latest CAM received up to the current replay time (green)
   - optional (toggle): minimal CAM view - only the latest received CAM position
     and a line through its 5 most recent pathHistory points
+
+Minimal DENM view (toggle): only the current DENM position and a line through
+the last 5 reached PathPoints; everything else of the DENM is hidden.
 
 Reuses PCAP parsing, ASN.1 compilation and DENM extraction from denm_count.py,
 the event type text from denm_common.py and the delta position helper from
@@ -351,7 +354,7 @@ HTML_TEMPLATE = r'''<!doctype html>
   .ep-lbl::before { display:none; }
   .cam-lbl { background:#1570ef; color:#fff; border:none; font-size:11px; padding:1px 4px; }
   .cam-lbl::before { display:none; }
-  .ph-lbl { background:#7a5af8; color:#fff; border:none; font-size:11px; padding:1px 4px; }
+  .ph-lbl { background:#3f9c0a; color:#fff; border:none; font-size:11px; padding:1px 4px; }
   .ph-lbl::before { display:none; }
   .cam { display:block; border:1px solid var(--line); border-radius:6px; padding:6px 8px; margin-bottom:6px;
          cursor:pointer; color:var(--text); }
@@ -394,6 +397,7 @@ HTML_TEMPLATE = r'''<!doctype html>
     <label class="opt"><input type="checkbox" id="showLabels" checked> pathDeltaTime labels</label>
     <label class="opt"><input type="checkbox" id="showPreview" checked> full trace preview</label>
     <label class="opt"><input type="checkbox" id="showEz" checked> eventZone</label>
+    <label class="opt"><input type="checkbox" id="denmMinimal"> minimal DENM view: current DENM position and the last 5 reached PathPoints only</label>
     <h2>Info</h2>
     <div id="info" class="muted"></div>
   </div>
@@ -740,11 +744,11 @@ function renderCamPath(absT) {
     camLayers.path.clearLayers();
     if (ph) {
       const pts = [[ph[1], ph[2]], ...ph[3].map(p => [p[0], p[1]])];
-      L.polyline(pts, { color: '#9e77ed', weight: 3, opacity: .95 }).addTo(camLayers.path);
+      L.polyline(pts, { color: '#7cfc00', weight: 3, opacity: .95 }).addTo(camLayers.path);
       let acc = 0;
       ph[3].forEach((p, i) => {
         if (p[2] !== null) acc += p[2] / 100;
-        L.circleMarker([p[0], p[1]], { radius: 4, color: '#fff', weight: 1, fillColor: '#7a5af8', fillOpacity: 1 })
+        L.circleMarker([p[0], p[1]], { radius: 4, color: '#fff', weight: 1, fillColor: '#3f9c0a', fillOpacity: 1 })
           .bindPopup(`<b>CAM ${r.c.stationId} pathHistory point ${i + 1}</b><br>pathDeltaTime: ${p[2] ?? 'n/a'}` +
                      (p[2] !== null ? ` (${(p[2] / 100).toFixed(2)} s)` : '') +
                      `<br>${acc.toFixed(2)} s before the CAM`)
@@ -768,7 +772,7 @@ const lastIdx = (rows, t) => {   // index of the last row with rows[i][0] <= t, 
   return lo;
 };
 const CAM_MINIMAL_POINTS = 5;
-const camMinLine = L.polyline([], { color: '#9e77ed', weight: 3, opacity: .95 });
+const camMinLine = L.polyline([], { color: '#7cfc00', weight: 3, opacity: .95 });
 
 // Minimal CAM view: marker at the position of the latest received CAM (no interpolation)
 // and a line through the CAM_MINIMAL_POINTS most recent pathHistory points of the latest
@@ -834,6 +838,8 @@ function renderCam(absT, denmPos) {
 }
 
 // ─── Rendering at replay time t ────────────────────────────────────────────
+const DENM_MINIMAL_POINTS = 5;
+
 function render() {
   const { seqPts: P, T } = st;
   if (!P.length) return;
@@ -846,13 +852,16 @@ function render() {
   const pos = done ? b : { lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f };
   const reached = done ? P.length - 1 : k;
 
-  drawn.setLatLngs([...P.slice(0, reached + 1).map(p => [p.lat, p.lon]), [pos.lat, pos.lon]]);
+  // Minimal DENM view: only the last DENM_MINIMAL_POINTS reached PathPoints as a line
+  const dMin = $('denmMinimal').checked;
+  const from = dMin ? Math.max(0, reached - DENM_MINIMAL_POINTS + 1) : 0;
+  drawn.setLatLngs([...P.slice(from, reached + 1).map(p => [p.lat, p.lon]), [pos.lat, pos.lon]]);
   mover.setLatLng([pos.lat, pos.lon]);
   if (!map.hasLayer(mover)) mover.addTo(map);
 
   st.markers.forEach((mk, i) => {
     if (!mk) return;
-    const show = i <= reached;
+    const show = i <= reached && !dMin;
     if (show && !layers.points.hasLayer(mk)) layers.points.addLayer(mk);
     if (!show && layers.points.hasLayer(mk)) layers.points.removeLayer(mk);
   });
@@ -868,8 +877,10 @@ function applyDisplay() {
   const lbl = $('showLabels').checked;
   st.markers.forEach(mk => mk && (lbl ? mk.openTooltip() : mk.closeTooltip()));
   document.querySelectorAll('.lbl').forEach(el => el.style.display = lbl ? '' : 'none');
-  $('showPreview').checked ? layers.preview.addTo(map) : map.removeLayer(layers.preview);
-  $('showEz').checked ? layers.ez.addTo(map) : map.removeLayer(layers.ez);
+  const dMin = $('denmMinimal').checked;   // minimal DENM view hides everything else of the DENM
+  $('showPreview').checked && !dMin ? layers.preview.addTo(map) : map.removeLayer(layers.preview);
+  $('showEz').checked && !dMin ? layers.ez.addTo(map) : map.removeLayer(layers.ez);
+  !dMin ? layers.static.addTo(map) : map.removeLayer(layers.static);
   $('showCam').checked && $('showCamPreview').checked && !$('camMinimal').checked
     ? camLayers.preview.addTo(map) : map.removeLayer(camLayers.preview);
 }
@@ -907,6 +918,7 @@ $('cap').onchange = () => { if (mode() === 'compress') { const frac = st.t / st.
 $('showCam').onchange = () => { applyDisplay(); render(); };
 $('showCamPath').onchange = () => render();
 $('camMinimal').onchange = () => { applyDisplay(); render(); };
+$('denmMinimal').onchange = () => { applyDisplay(); render(); };
 layers.points.on('layeradd', ev => { if (!$('showLabels').checked) ev.layer.closeTooltip(); });
 
 renderFilter();

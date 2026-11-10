@@ -166,13 +166,18 @@ needs an internet connection for the map tiles):
   chosen manually.
 - **CAM pathHistory** (toggle, off by default): shows the `pathHistory` of the
   latest CAM with a low frequency container received up to the current replay
-  time (purple), from the CAM referencePosition backwards; each point has a
+  time (bright green; the eventZone is darker green), from the CAM referencePosition backwards; each point has a
   popup with its `pathDeltaTime`, the end is labeled with the number of points
   and the time span covered
 - **minimal CAM view** (toggle, off by default): only the position of the
   latest received CAM (not interpolated) and a line through its 5 most recent
   `pathHistory` points; the CAM track, the CAM preview and the full pathHistory
   are hidden while it is on
+- **minimal DENM view** (toggle, off by default): only the current DENM
+  position and a line through the last 5 reached PathPoints; the rest of the
+  trace, the PathPoint markers and labels, the trace preview, the eventZone and
+  the eventPosition marker are hidden while it is on. It can be combined with
+  the minimal CAM view
 
 ```bash
 python denm_replay.py ../test-data/TrafficManager.pcap
