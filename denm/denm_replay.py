@@ -33,6 +33,23 @@ Replay:
 The trace is drawn on a satellite map (Esri World Imagery, needs internet).
 The eventZone is shown in green, the full trace faintly as a preview.
 
+CAM in parallel (ASN.1 in ../cam/ASN, disable with --no-cam):
+  - all CAMs of the capture are decoded; DENM and CAMs are put on the common
+    capture (receiver) clock: the eventPosition is placed at the reception time
+    of the first DENM with that detectionTime, every PathPoint pathDeltaTime
+    earlier (the station clocks themselves may be far off)
+  - every CAM station with CAMs in the time window of the selected trace is
+    scored (0..100) and listed:
+      40  trace  - median distance between trace points and the CAM position
+                   at the same time (<= 5 m: full, >= 50 m: none)
+      25  timing - share of the trace time span covered by CAMs
+      20  cause  - incidentIndication of the CAM special vehicle container:
+                   same cause and sub cause / same cause / container fits
+      15  station - same stationId (or at least the same stationType)
+  - the best candidate is selected automatically if it reaches 50/100; the
+    CAM track (blue) and position are replayed in parallel with the DENM,
+    with the distance between both shown in the status line
+
 Reuses PCAP parsing, ASN.1 compilation and DENM extraction from denm_count.py,
 the event type text from denm_common.py and the delta position helper from
 denm_to_kml.py.
@@ -50,11 +67,22 @@ import sys
 import webbrowser
 from pathlib import Path
 
-from denm_common import CDD_FILE, denm_event_type, load_cause_names
-from denm_count import ASN_FILES, DEFAULT_ASN_DIR, compile_asn, expand_pcaps, extract_denm, iter_its_packets
+import asn1tools
+
+from denm_common import CDD_FILE, denm_event_type, event_type_info, load_cause_names
+from denm_count import ASN_FILES, DEFAULT_ASN_DIR, compile_asn, expand_pcaps, extract_denm
 from denm_to_kml import COORD_SCALE, cumulative_points
+from ivim_zone_count import iter_its_packets_ts
 
 RSU_STATION_TYPE = 15   # roadSideUnit, deselected by default in the stationType filter
+
+# CAM decoding (ETSI EN 302 637-2, CAM release 2, ASN.1 in ../cam/ASN)
+DEFAULT_CAM_ASN_DIR = Path(__file__).parent.parent / 'cam' / 'ASN'
+CAM_ASN_FILES = ['ETSI-ITS-CDD.asn', 'CAM-PDU-Descriptions.asn']
+BTP_CAM_PORT = b'\x07\xd1'   # BTP destination port 2001 = CAM
+CAM_MESSAGE_ID = 2
+SPEED_UNAVAILABLE = 16383     # SpeedValue, unit 0.01 m/s
+HEADING_UNAVAILABLE = 3601    # HeadingValue, unit 0.1 degree
 
 _STATION_TYPE_RE = re.compile(r'^StationType\s*::=\s*INTEGER\s*\{(.*?)\}', re.S | re.M)
 _NAMED_RE = re.compile(r'([A-Za-z][\w-]*)\s*\((\d+)\)')
@@ -65,6 +93,64 @@ def load_station_type_names(asn_dir: Path) -> dict:
     text = (Path(asn_dir) / CDD_FILE).read_text(encoding='utf-8', errors='replace')
     m = _STATION_TYPE_RE.search(text)
     return {int(n): name for name, n in _NAMED_RE.findall(m.group(1))} if m else {}
+
+
+def compile_cam_asn(asn_dir: Path):
+    files = [str(Path(asn_dir) / n) for n in CAM_ASN_FILES]
+    for f in files:
+        if not Path(f).exists():
+            raise FileNotFoundError(f'ASN.1 file not found: {f}')
+    return asn1tools.compile_files(files, codec='uper')
+
+
+def extract_cam(pkt: bytes, db):
+    """Return the decoded CAM of a packet or None (BTP port 2001, messageId 2)."""
+    pos = 0
+    while True:
+        idx = pkt.find(BTP_CAM_PORT, pos)
+        if idx == -1:
+            return None
+        pos = idx + 1
+        start = idx + 4
+        if start + 6 >= len(pkt) or pkt[start + 1] != CAM_MESSAGE_ID:
+            continue
+        try:
+            return db.decode('CAM', pkt[start:])
+        except Exception:
+            continue
+
+
+def cam_record(cam: dict, rx: float, names: dict) -> tuple:
+    """(stationId, stationType, position row, incident) for one decoded CAM.
+
+    position row: [rx time s, lat, lon, speed km/h | None, heading deg | None]
+    (the caller appends the incident index as row[5])
+    incident: (container name, cause no | None, sub cause no | None, text) of the
+    special vehicle container, or None.
+    """
+    params = cam['cam']['camParameters']
+    basic = params['basicContainer']
+    ref = basic['referencePosition']
+    speed = heading = None
+    hf_type, hf = params['highFrequencyContainer']
+    if hf_type == 'basicVehicleContainerHighFrequency':
+        sv = hf['speed']['speedValue']
+        hv = hf['heading']['headingValue']
+        speed = round(sv * 0.036, 1) if sv != SPEED_UNAVAILABLE else None
+        heading = round(hv / 10, 1) if hv != HEADING_UNAVAILABLE else None
+    row = [round(rx, 3), ref['latitude'] / COORD_SCALE, ref['longitude'] / COORD_SCALE, speed, heading]
+
+    incident = None
+    svc = params.get('specialVehicleContainer')
+    if svc:
+        ctype, cdata = svc
+        ii = cdata.get('incidentIndication') if isinstance(cdata, dict) else None
+        if ii:
+            no, cname, sub, subname = event_type_info(ii, names)
+            incident = (ctype, no, sub, f'{cname}({no}) {subname or "unknown"}({sub})')
+        else:
+            incident = (ctype, None, None, '')
+    return cam['header']['stationId'], basic['stationType'], row, incident
 
 
 def build_candidate(denm: dict, names: dict, st_names: dict) -> dict:
@@ -84,12 +170,17 @@ def build_candidate(denm: dict, names: dict, st_names: dict) -> dict:
     event_zone = situation.get('eventZone')
     st = mgmt['stationType']
     aid = mgmt['actionId']
+    cause = None
+    if situation.get('eventType'):
+        no, _, sub, _ = event_type_info(situation['eventType'], names)
+        cause = [no, sub]
     return {
         'stationId': aid['originatingStationId'],
         'seq': aid['sequenceNumber'],
         'stationType': f'{st_names.get(st, "unknown")}({st})',
         'stationTypeNo': st,
         'eventType': denm_event_type(denm, names),
+        'cause': cause,
         'terminated': 'termination' in mgmt,
         'eventPosition': {'lat': lat0 / COORD_SCALE, 'lon': lon0 / COORD_SCALE},
         'eventZone': ([{'lat': la, 'lon': lo} for la, lo in
@@ -100,31 +191,54 @@ def build_candidate(denm: dict, names: dict, st_names: dict) -> dict:
     }
 
 
-def collect(pcap_files: list, asn_dir: Path) -> list:
+def collect(pcap_files: list, asn_dir: Path, cam_asn_dir) -> tuple:
+    """Return (DENM stations, CAM stations); CAM stations is [] if cam_asn_dir is None."""
     print(f'Compiling ASN.1 definitions from: {asn_dir}')
     for name in ASN_FILES:
         print(f'  - {name}')
     db = compile_asn(asn_dir)
     print('ASN.1 compilation successful.')
+    cam_db = None
+    if cam_asn_dir is not None:
+        print(f'Compiling CAM ASN.1 definitions from: {cam_asn_dir}')
+        for name in CAM_ASN_FILES:
+            print(f'  - {name}')
+        cam_db = compile_cam_asn(cam_asn_dir)
+        print('ASN.1 compilation successful.')
     names = load_cause_names(asn_dir)
     st_names = load_station_type_names(asn_dir)
+    cams: dict = {}      # CAM stationId -> {'stationTypeNo', 'positions', 'incidents'}
+    first_rx: dict = {}  # (stationId, seq, detectionTime) -> first reception time
 
     best: dict = {}      # (stationId, seq) -> candidate with most trace points (tie: latest)
     n_denms: dict = {}   # (stationId, seq) -> number of DENMs
     for pcap_file in expand_pcaps(pcap_files):
-        n_pkt = n_denm = 0
-        for pkt in iter_its_packets(pcap_file):
+        n_pkt = n_denm = n_cam = 0
+        for rx, pkt in iter_its_packets_ts(pcap_file):
             n_pkt += 1
             denm, _ = extract_denm(pkt, db)
             if denm is None:
+                cam = extract_cam(pkt, cam_db) if cam_db is not None else None
+                if cam is not None:
+                    n_cam += 1
+                    sid, stype, row, incident = cam_record(cam, rx, names)
+                    c = cams.setdefault(sid, {'stationTypeNo': stype, 'positions': [], 'incidents': {}})
+                    # row[5]: index into the station's incident list (None = no special vehicle container)
+                    row.append(c['incidents'].setdefault(incident, len(c['incidents']))
+                               if incident else None)
+                    c['positions'].append(row)
                 continue
             n_denm += 1
             cand = build_candidate(denm, names, st_names)
+            # Reception time of the first DENM with this detectionTime = time of the
+            # eventPosition (repetitions of the same DENM are received later)
+            det_key = (cand['stationId'], cand['seq'], denm['denm']['management']['detectionTime'])
+            cand['rx'] = round(first_rx.setdefault(det_key, rx), 3)
             key = (cand['stationId'], cand['seq'])
             n_denms[key] = n_denms.get(key, 0) + 1
             if key not in best or cand['points'] >= best[key]['points']:
                 best[key] = cand
-        print(f'\n{Path(pcap_file).name}: ITS-G5 packets {n_pkt} | DENMs {n_denm}')
+        print(f'\n{Path(pcap_file).name}: ITS-G5 packets {n_pkt} | DENMs {n_denm} | CAMs {n_cam}')
 
     stations: dict = {}
     for key, cand in best.items():
@@ -145,7 +259,25 @@ def collect(pcap_files: list, asn_dir: Path) -> list:
         print(f'  {st["stationId"]:>12}  {d["stationType"]:<20}  seq {d["seq"]:>5}  '
               f'traces {"/".join(str(len(t)) for t in d["traces"]) or "-":<10}  '
               f'{d["eventType"]}  (sequenceNumbers: {", ".join(str(e["seq"]) for e in st["entries"])})')
-    return result
+
+    cam_list = []
+    for sid in sorted(cams):
+        c = cams[sid]
+        c['positions'].sort(key=lambda r: r[0])
+        cam_list.append({
+            'stationId': sid,
+            'stationTypeNo': c['stationTypeNo'],
+            'stationType': f'{st_names.get(c["stationTypeNo"], "unknown")}({c["stationTypeNo"]})',
+            'positions': c['positions'],
+            'incidents': [list(i) for i in c['incidents']],   # in index order
+        })
+    if cam_db is not None:
+        print(f'\nCAM stations: {len(cam_list)}')
+        for c in cam_list:
+            inc = ', '.join(sorted({f'{i[0]} {i[3]}'.strip() for i in c['incidents']})) or '-'
+            print(f'  {c["stationId"]:>12}  {c["stationType"]:<20}  CAMs {len(c["positions"]):>5}  '
+                  f'special vehicle container: {inc}')
+    return result, cam_list
 
 
 HTML_TEMPLATE = r'''<!doctype html>
@@ -193,6 +325,13 @@ HTML_TEMPLATE = r'''<!doctype html>
   .lbl::before { display:none; }
   .ep-lbl { background:#d92d20; color:#fff; border:none; font-weight:600; }
   .ep-lbl::before { display:none; }
+  .cam-lbl { background:#1570ef; color:#fff; border:none; font-size:11px; padding:1px 4px; }
+  .cam-lbl::before { display:none; }
+  .cam { display:block; border:1px solid var(--line); border-radius:6px; padding:6px 8px; margin-bottom:6px;
+         cursor:pointer; color:var(--text); }
+  .cam .score { float:right; font-weight:600; font-variant-numeric: tabular-nums; }
+  .cam small { display:block; color:var(--muted); }
+  .swatch { display:inline-block; width:10px; height:10px; border-radius:50%; vertical-align:middle; margin-right:4px; }
   @media (max-width: 760px) {
     #app { grid-template-columns: 1fr; grid-template-rows: auto 55vh auto; }
     #side { grid-row:auto; max-height:40vh; border-right:none; border-bottom:1px solid var(--line); }
@@ -213,6 +352,10 @@ HTML_TEMPLATE = r'''<!doctype html>
     <div class="muted" id="seqinfo"></div>
     <h2>Trace</h2>
     <div id="traces"></div>
+    <h2>CAM match</h2>
+    <div id="cams" class="muted"></div>
+    <label class="opt"><input type="checkbox" id="showCam" checked> show CAM in parallel</label>
+    <label class="opt"><input type="checkbox" id="showCamPreview" checked> full CAM track in the DENM time window</label>
     <h2>Replay mode</h2>
     <label class="opt"><input type="radio" name="mode" value="real" checked> Real time (pathDeltaTime)</label>
     <label class="opt"><input type="radio" name="mode" value="compress"> Real time, compress pauses</label>
@@ -261,8 +404,14 @@ const layers = { preview: L.layerGroup().addTo(map), ez: L.layerGroup().addTo(ma
 let drawn = L.polyline([], { color: '#ff3b30', weight: 4 }).addTo(map);
 let mover = L.circleMarker([0, 0], { radius: 7, color: '#fff', weight: 2, fillColor: '#ff3b30', fillOpacity: 1 });
 
+const camLayers = { preview: L.layerGroup().addTo(map) };
+const camDrawn = L.polyline([], { color: '#2e90fa', weight: 4 }).addTo(map);
+const camMover = L.circleMarker([0, 0], { radius: 7, color: '#fff', weight: 2, fillColor: '#1570ef', fillOpacity: 1 })
+  .bindTooltip('', { permanent: true, direction: 'left', className: 'cam-lbl', offset: [-8, 0] });
+
+// t0abs: reception time (s) of the last trace point, so that the eventPosition is at the DENM reception time
 const st = { station: null, entry: null, traceIdx: 0, seqPts: [], T: [], realT: [], markers: [],
-             t: 0, total: 0, playing: false, speed: 1, last: null };
+             t: 0, total: 0, playing: false, speed: 1, last: null, t0abs: 0, cam: null, camRank: [] };
 
 const $ = id => document.getElementById(id);
 $('src').textContent = DATA.source;
@@ -347,6 +496,7 @@ function selectEntry(e) {
 function selectTrace(i) {
   st.traceIdx = i;
   build();
+  rankCams();
   const bounds = L.latLngBounds(st.seqPts.map(p => [p.lat, p.lon]));
   st.entry.eventZone.forEach(p => bounds.extend([p.lat, p.lon]));
   map.fitBounds(bounds, { padding: [40, 40], maxZoom: 19 });
@@ -385,6 +535,7 @@ function build() {
     realT.push(realT[k] + real);
   }
   st.seqPts = seq; st.T = T; st.realT = realT; st.total = T[T.length - 1];
+  st.t0abs = e.rx - realT[realT.length - 1];
 
   // Static layers
   layers.preview.clearLayers(); layers.ez.clearLayers(); layers.points.clearLayers(); layers.static.clearLayers();
@@ -421,11 +572,150 @@ function build() {
     event type ${e.eventType}<br>trace ${st.traceIdx + 1}: ${trace.length} PathPoints,
     ${nDt} with pathDeltaTime<br>recorded travel time ${realT[realT.length - 1].toFixed(1)} s
     ${nDt < trace.length ? '(incl. estimated segments)' : ''}<br>
-    replay length at 1x: ${st.total.toFixed(1)} s`;
+    replay length at 1x: ${st.total.toFixed(1)} s<br>
+    DENM received ${new Date(e.rx * 1000).toISOString().replace('T', ' ').slice(0, 23)} UTC
+    (capture clock; the eventPosition is placed at this time)`;
 
   applyDisplay();
   st.t = 0;
   render();
+}
+
+// ─── CAM matching ──────────────────────────────────────────────────────────
+// CAM positions are rows [rx time s, lat, lon, speed km/h, heading deg, incident index].
+// DENM trace and CAMs share the capture (receiver) clock: the eventPosition is
+// placed at the DENM reception time, every PathPoint pathDeltaTime earlier.
+const CAM_MAX_GAP = 3;      // s; no CAM position is interpolated across larger gaps
+const CAM_WINDOW = 5;       // s added before/after the DENM trace time span
+const CAM_AUTO_SELECT = 50; // minimum score for the automatic CAM selection
+// Special vehicle containers that fit a DENM cause code (no incidentIndication match)
+const PLAUSIBLE_CONTAINER = {
+  95: ['emergencyContainer', 'rescueContainer', 'safetyCarContainer'],   // emergencyVehicleApproaching
+  15: ['emergencyContainer', 'rescueContainer'],                          // rescueAndRecoveryWorkInProgress
+  3: ['roadWorksContainerBasic'],                                          // roadworks
+  26: ['roadWorksContainerBasic', 'specialTransportContainer', 'safetyCarContainer'],  // slowVehicle
+};
+
+function camPosAt(c, t) {
+  const P = c.positions;
+  if (!P.length || t < P[0][0] - 1 || t > P[P.length - 1][0] + 1) return null;
+  let lo = 0, hi = P.length - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (P[m][0] <= t) lo = m; else hi = m; }
+  const a = P[lo], b = P[hi];
+  if (t <= a[0]) return { lat: a[1], lon: a[2], row: a };
+  if (t >= b[0]) return { lat: b[1], lon: b[2], row: b };
+  if (b[0] - a[0] > CAM_MAX_GAP) return null;
+  const f = (t - a[0]) / (b[0] - a[0]);
+  return { lat: a[1] + (b[1] - a[1]) * f, lon: a[2] + (b[2] - a[2]) * f, row: f < .5 ? a : b };
+}
+
+const clamp01 = x => Math.max(0, Math.min(1, x));
+const median = arr => { const s = [...arr].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
+
+function scoreCam(c) {
+  const e = st.entry, P = st.seqPts;
+  const t1 = e.rx, t0 = st.t0abs;
+  const win = c.positions.filter(r => r[0] >= t0 - CAM_WINDOW && r[0] <= t1 + CAM_WINDOW);
+  if (!win.length) return null;
+
+  // Trace: distance between each trace point and the CAM position at the same time
+  const dists = [];
+  P.forEach((p, k) => { const q = camPosAt(c, t0 + st.realT[k]); if (q) dists.push(haversine(p, q)); });
+  let trace, traceTxt;
+  if (dists.length >= 2) {
+    const med = median(dists);
+    trace = clamp01((50 - med) / 45);               // <= 5 m: 1, >= 50 m: 0
+    traceTxt = `trace ${med.toFixed(1)} m median (${dists.length} pts at same time)`;
+  } else {
+    const near = P.map(p => Math.min(...win.map(r => haversine(p, { lat: r[1], lon: r[2] }))));
+    const med = median(near);
+    trace = 0.5 * clamp01((50 - med) / 45);         // spatial only: half weight
+    traceTxt = `trace ${med.toFixed(1)} m median (spatial only)`;
+  }
+
+  // Timing: share of the DENM trace time span covered by CAMs of this station
+  const N = 100;
+  let covered = 0;
+  for (let i = 0; i <= N; i++) if (camPosAt(c, t0 + (t1 - t0) * i / N)) covered++;
+  const timing = covered / (N + 1);
+
+  // Cause: incidentIndication of the special vehicle container in the time window
+  let cause = 0, causeTxt = 'no cause information';
+  const incs = [...new Set(win.map(r => r[5]).filter(i => i !== null))].map(i => c.incidents[i]);
+  if (e.cause && incs.length) {
+    const [cno, csub] = e.cause;
+    const exact = incs.find(i => i[1] === cno && i[2] === csub);
+    const same = incs.find(i => i[1] === cno);
+    const plaus = incs.find(i => (PLAUSIBLE_CONTAINER[cno] || []).includes(i[0]));
+    if (exact) { cause = 1; causeTxt = `${exact[0]}: ${exact[3]} (same cause and sub cause)`; }
+    else if (same) { cause = 0.8; causeTxt = `${same[0]}: ${same[3]} (same cause)`; }
+    else if (plaus) { cause = 0.5; causeTxt = `${plaus[0]}${plaus[3] ? ': ' + plaus[3] : ''} (fits the cause)`; }
+    else causeTxt = `${incs.map(i => i[0] + (i[3] ? ': ' + i[3] : '')).join(', ')} (does not fit)`;
+  }
+
+  // Station: same stationId, or at least the same stationType
+  const station = c.stationId === e.stationId ? 1 : c.stationTypeNo === e.stationTypeNo ? 0.3 : 0;
+  const stationTxt = station === 1 ? 'same stationId' : station ? 'same stationType' : 'other station';
+
+  const score = 40 * trace + 25 * timing + 20 * cause + 15 * station;
+  return { c, score, win, details: [traceTxt, `time coverage ${Math.round(timing * 100)} %`, causeTxt, stationTxt] };
+}
+
+function rankCams() {
+  st.camRank = DATA.cams.map(scoreCam).filter(Boolean).sort((a, b) => b.score - a.score);
+  const box = $('cams');
+  box.innerHTML = '';
+  if (!DATA.cams.length) { box.textContent = 'No CAMs decoded.'; selectCam(null); return; }
+  if (!st.camRank.length) { box.textContent = 'No CAMs in the time window of this DENM trace.'; selectCam(null); return; }
+  const best = st.camRank[0].score >= CAM_AUTO_SELECT ? st.camRank[0] : null;
+  const mk = r => {
+    const lab = document.createElement('label');
+    lab.className = 'cam';
+    lab.innerHTML = r
+      ? `<input type="radio" name="cam" ${r === best ? 'checked' : ''}> <span class="swatch" style="background:#1570ef"></span>
+         <b>${r.c.stationId}</b> &middot; ${r.c.stationType}<span class="score">${r.score.toFixed(0)}/100</span>
+         <small>${r.details.join('<br>')}<br>${r.win.length} CAM(s) in the time window</small>`
+      : `<input type="radio" name="cam" ${best ? '' : 'checked'}> no CAM` +
+        (best ? '' : `<small>no candidate reaches ${CAM_AUTO_SELECT}/100, none preselected</small>`);
+    lab.querySelector('input').onchange = () => selectCam(r);
+    box.appendChild(lab);
+  };
+  st.camRank.forEach(mk);
+  mk(null);
+  selectCam(best);
+}
+
+function selectCam(r) {
+  st.cam = r;
+  camLayers.preview.clearLayers();
+  if (r) {
+    L.polyline(r.win.map(p => [p[1], p[2]]), { color: '#84caff', weight: 2, opacity: .8, dashArray: '2 6' })
+      .addTo(camLayers.preview);
+  }
+  applyDisplay();
+  render();
+}
+
+function renderCam(absT, denmPos) {
+  const r = st.cam, show = r && $('showCam').checked;
+  if (!show) {
+    camDrawn.setLatLngs([]);
+    if (map.hasLayer(camMover)) map.removeLayer(camMover);
+    return '';
+  }
+  const past = r.win.filter(p => p[0] <= absT).map(p => [p[1], p[2]]);
+  const q = camPosAt(r.c, absT);
+  if (q) past.push([q.lat, q.lon]);
+  camDrawn.setLatLngs(past);
+  if (!q) {
+    if (map.hasLayer(camMover)) map.removeLayer(camMover);
+    return `  ·  CAM ${r.c.stationId}: no CAM at this time`;
+  }
+  camMover.setLatLng([q.lat, q.lon]);
+  if (!map.hasLayer(camMover)) camMover.addTo(map);
+  const spd = q.row[3] !== null ? `${q.row[3].toFixed(0)} km/h` : '';
+  camMover.setTooltipContent(`CAM ${r.c.stationId} ${spd}`);
+  return `  ·  CAM ${r.c.stationId} ${haversine(q, denmPos).toFixed(1)} m from DENM position${spd ? ', ' + spd : ''}`;
 }
 
 // ─── Rendering at replay time t ────────────────────────────────────────────
@@ -454,8 +744,9 @@ function render() {
 
   const realNow = st.realT[k] + (st.realT[Math.min(k + 1, st.realT.length - 1)] - st.realT[k]) * (done ? 1 : f);
   $('timeline').value = st.total ? Math.round(t / st.total * 10000) : 0;
+  const camTxt = renderCam(st.t0abs + realNow, pos);
   $('status').textContent = `replay ${t.toFixed(1)} / ${st.total.toFixed(1)} s  ·  recorded ${realNow.toFixed(1)} s  ·  ` +
-    (done ? 'eventPosition reached' : `${a.name} → ${b.name}`);
+    (done ? 'eventPosition reached' : `${a.name} → ${b.name}`) + camTxt;
 }
 
 function applyDisplay() {
@@ -464,6 +755,7 @@ function applyDisplay() {
   document.querySelectorAll('.lbl').forEach(el => el.style.display = lbl ? '' : 'none');
   $('showPreview').checked ? layers.preview.addTo(map) : map.removeLayer(layers.preview);
   $('showEz').checked ? layers.ez.addTo(map) : map.removeLayer(layers.ez);
+  $('showCam').checked && $('showCamPreview').checked ? camLayers.preview.addTo(map) : map.removeLayer(camLayers.preview);
 }
 
 // ─── Playback ──────────────────────────────────────────────────────────────
@@ -495,7 +787,8 @@ document.querySelectorAll('input[name=mode]').forEach(r => r.onchange = () => {
   build(); st.t = frac * st.total; render();
 });
 $('cap').onchange = () => { if (mode() === 'compress') { const frac = st.t / st.total; build(); st.t = frac * st.total; render(); } };
-['showLabels', 'showPreview', 'showEz'].forEach(id => $(id).onchange = applyDisplay);
+['showLabels', 'showPreview', 'showEz', 'showCamPreview'].forEach(id => $(id).onchange = applyDisplay);
+$('showCam').onchange = () => { applyDisplay(); render(); };
 layers.points.on('layeradd', ev => { if (!$('showLabels').checked) ev.layer.closeTooltip(); });
 
 renderFilter();
@@ -538,9 +831,14 @@ def main() -> None:
                         help='Do not open the page in the browser')
     parser.add_argument('--asn-dir', type=Path, default=DEFAULT_ASN_DIR, metavar='DIR',
                         help=f'Directory with ASN.1 files (default: {DEFAULT_ASN_DIR})')
+    parser.add_argument('--cam-asn-dir', type=Path, default=DEFAULT_CAM_ASN_DIR, metavar='DIR',
+                        help=f'Directory with CAM ASN.1 files (default: {DEFAULT_CAM_ASN_DIR})')
+    parser.add_argument('--no-cam', action='store_true',
+                        help='Do not decode CAMs (no CAM matching / parallel view)')
     args = parser.parse_args()
     try:
-        stations = collect(args.pcap, args.asn_dir)
+        stations, cams = collect(args.pcap, args.asn_dir,
+                                 None if args.no_cam else args.cam_asn_dir)
     except (FileNotFoundError, ValueError) as e:
         print(f'Error: {e}', file=sys.stderr)
         sys.exit(1)
@@ -548,6 +846,7 @@ def main() -> None:
     data = {
         'source': ', '.join(Path(p).name for p in expand_pcaps(args.pcap)),
         'stations': stations,
+        'cams': cams,
         'preselect': ({'station': args.station, 'seq': args.seq}
                       if args.station is not None else None),
     }

@@ -148,17 +148,36 @@ needs an internet connection for the map tiles):
 - **timeline slider** (ticks at the PathPoints) to move back and forth and a
   **speed slider** (0.1x … 50x); the eventZone and a faint preview of the full
   trace can be toggled
+- **CAM in parallel**: all CAMs of the capture are decoded (ASN.1 in
+  [`../cam/ASN/`](../cam/ASN/)) and the CAM station that matches the selected
+  DENM trace best is selected automatically and replayed in parallel (blue),
+  with the distance to the DENM position in the status line. DENM and CAMs are
+  aligned on the capture (receiver) clock, since station clocks can be far off.
+  Every candidate gets a score out of 100 with the details listed:
+
+  | Weight | Criterion | Full points |
+  |--------|-----------|-------------|
+  | 40 | trace: median distance between trace points and the CAM position at the same time | ≤ 5 m (none at ≥ 50 m) |
+  | 25 | timing: share of the trace time span covered by CAMs | 100 % |
+  | 20 | cause: `incidentIndication` in the CAM special vehicle container | same cause and sub cause (same cause: 80 %, fitting container: 50 %) |
+  | 15 | station | same stationId (same stationType: 30 %) |
+
+  A candidate is only preselected from 50/100 on; any candidate (or none) can be
+  chosen manually.
 
 ```bash
 python denm_replay.py ../test-data/TrafficManager.pcap
 python denm_replay.py ../test-data/TrafficManager.pcap --station 10101004 --seq 42
 python denm_replay.py capture.pcap -o my_replay.html --no-open
+python denm_replay.py capture.pcap --no-cam      # DENM only
 ```
 
 The event type helper shared by the tools is in `denm_common.py`.
 The tools reuse PCAP parsing from [`../ivim/ivim_zone_count.py`](../ivim/ivim_zone_count.py)
-(Ethernet, raw 802.11 and 802.11 + Radiotap captures) and the KML helpers from
-`../ivim/ivim_to_kml.py`, so they must be run from within this repository tree.
+(Ethernet, raw 802.11 and 802.11 + Radiotap captures; `iter_its_packets_ts` also
+returns the capture timestamps), the KML helpers from `../ivim/ivim_to_kml.py`
+and, for `denm_replay.py`, the CAM ASN.1 files from [`../cam/ASN/`](../cam/ASN/),
+so they must be run from within this repository tree.
 
 ---
 

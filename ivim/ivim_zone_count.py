@@ -95,6 +95,12 @@ def iter_its_packets(pcap_path: str):
     with or without a Radiotap header (linktype 105 / 127, as produced by
     802.11p / ITS-G5 monitor-mode captures).
     """
+    for _ts, pkt in iter_its_packets_ts(pcap_path):
+        yield pkt
+
+
+def iter_its_packets_ts(pcap_path: str):
+    """Like iter_its_packets(), but yields (capture timestamp in s, packet bytes)."""
     with open(pcap_path, 'rb') as f:
         raw = f.read()
     magic = struct.unpack('<I', raw[:4])[0]
@@ -110,17 +116,19 @@ def iter_its_packets(pcap_path: str):
             f'({LINKTYPE_IEEE802_11}), IEEE 802.11 + Radiotap '
             f'({LINKTYPE_IEEE802_11_RADIOTAP}).')
 
+    frac_scale = 1e9 if magic == 0xa1b23c4d else 1e6   # nanosecond / microsecond PCAP
     offset = 24
     while offset + 16 <= len(raw):
-        _ts, _us, incl_len, _orig = struct.unpack('<IIII', raw[offset:offset + 16])
+        ts_sec, ts_frac, incl_len, _orig = struct.unpack('<IIII', raw[offset:offset + 16])
         pkt = raw[offset + 16:offset + 16 + incl_len]
         offset += 16 + incl_len
+        ts = ts_sec + ts_frac / frac_scale
         if linktype == LINKTYPE_ETHERNET:
             if len(pkt) >= 14 and struct.unpack('>H', pkt[12:14])[0] == 0x8947:
-                yield pkt
+                yield ts, pkt
         else:
             if _is_its_g5_80211(pkt, has_radiotap=(linktype == LINKTYPE_IEEE802_11_RADIOTAP)):
-                yield pkt
+                yield ts, pkt
 
 
 def extract_ivim(pkt: bytes, db):
