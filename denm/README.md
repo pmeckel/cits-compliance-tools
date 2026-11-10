@@ -123,7 +123,39 @@ python denm_to_kml.py ../test-data/DENM*.pcap --mode points -o denm_points.kml
 python denm_to_kml.py capture.pcap --kmz -o output
 ```
 
-The event type helper shared by the three tools is in `denm_common.py`.
+---
+
+### `denm_replay.py` — Trace replay on a satellite map
+
+Writes a self-contained HTML page (`denm_replay.html`, opened in the browser)
+that replays a DENM trace on a satellite map (Leaflet + Esri World Imagery;
+needs an internet connection for the map tiles):
+
+- **stationType filter**: checkboxes for all stationTypes in the capture; all
+  are selected by default except `roadSideUnit(15)`
+- **one entry per originatingStationId**, preselecting the DENM with the most
+  trace points (tie: highest sequenceNumber); the other sequenceNumbers of the
+  station can be selected from a list (per sequenceNumber the DENM with the most
+  trace points is used)
+- **all traces** of the selected DENM are listed with their number of PathPoints
+- the replay starts at the **last PathPoint** and moves to the eventPosition,
+  drawing the line and marking every reached PathPoint with its
+  `pathDeltaTime` (s); `pathDeltaTime` is the travel time to the previous
+  PathPoint (to the eventPosition for the first one), a missing one is estimated
+  from the median speed of the trace and labeled `n/a`
+- **replay modes**: real time, real time with compressed pauses (segments longer
+  than an adjustable cap are shortened), and point by point (1 s per PathPoint)
+- **timeline slider** (ticks at the PathPoints) to move back and forth and a
+  **speed slider** (0.1x … 50x); the eventZone and a faint preview of the full
+  trace can be toggled
+
+```bash
+python denm_replay.py ../test-data/TrafficManager.pcap
+python denm_replay.py ../test-data/TrafficManager.pcap --station 10101004 --seq 42
+python denm_replay.py capture.pcap -o my_replay.html --no-open
+```
+
+The event type helper shared by the tools is in `denm_common.py`.
 The tools reuse PCAP parsing from [`../ivim/ivim_zone_count.py`](../ivim/ivim_zone_count.py)
 (Ethernet, raw 802.11 and 802.11 + Radiotap captures) and the KML helpers from
 `../ivim/ivim_to_kml.py`, so they must be run from within this repository tree.

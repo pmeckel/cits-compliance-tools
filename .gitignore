@@ -12,3 +12,4 @@ venv/
 *.kml
 *.kmz
 *_report.txt
+*.html
