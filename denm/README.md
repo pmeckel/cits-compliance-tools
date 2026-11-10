@@ -169,6 +169,10 @@ needs an internet connection for the map tiles):
   time (purple), from the CAM referencePosition backwards; each point has a
   popup with its `pathDeltaTime`, the end is labeled with the number of points
   and the time span covered
+- **minimal CAM view** (toggle, off by default): only the position of the
+  latest received CAM (not interpolated) and a line through its 5 most recent
+  `pathHistory` points; the CAM track, the CAM preview and the full pathHistory
+  are hidden while it is on
 
 ```bash
 python denm_replay.py ../test-data/TrafficManager.pcap

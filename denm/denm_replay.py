@@ -51,6 +51,8 @@ CAM in parallel (ASN.1 in ../cam/ASN, disable with --no-cam):
     with the distance between both shown in the status line
   - optional (toggle): the pathHistory of the low frequency container of the
     latest CAM received up to the current replay time (purple)
+  - optional (toggle): minimal CAM view - only the latest received CAM position
+    and a line through its 5 most recent pathHistory points
 
 Reuses PCAP parsing, ASN.1 compilation and DENM extraction from denm_count.py,
 the event type text from denm_common.py and the delta position helper from
@@ -381,6 +383,7 @@ HTML_TEMPLATE = r'''<!doctype html>
     <label class="opt"><input type="checkbox" id="showCam" checked> show CAM in parallel</label>
     <label class="opt"><input type="checkbox" id="showCamPreview" checked> full CAM track in the DENM time window</label>
     <label class="opt"><input type="checkbox" id="showCamPath"> CAM pathHistory (latest low frequency container)</label>
+    <label class="opt"><input type="checkbox" id="camMinimal"> minimal CAM view: latest CAM position and its last 5 pathHistory points only</label>
     <h2>Replay mode</h2>
     <label class="opt"><input type="radio" name="mode" value="real" checked> Real time (pathDeltaTime)</label>
     <label class="opt"><input type="radio" name="mode" value="compress"> Real time, compress pauses</label>
@@ -759,8 +762,56 @@ function renderCamPath(absT) {
   return ph ? `  ·  pathHistory ${ph[3].length} pts from CAM ${(absT - ph[0]).toFixed(1)} s ago` : '';
 }
 
+const lastIdx = (rows, t) => {   // index of the last row with rows[i][0] <= t, -1 if none
+  let lo = -1, hi = rows.length;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (rows[m][0] <= t) lo = m; else hi = m; }
+  return lo;
+};
+const CAM_MINIMAL_POINTS = 5;
+const camMinLine = L.polyline([], { color: '#9e77ed', weight: 3, opacity: .95 });
+
+// Minimal CAM view: marker at the position of the latest received CAM (no interpolation)
+// and a line through the CAM_MINIMAL_POINTS most recent pathHistory points of the latest
+// CAM with low frequency container; nothing else of the CAM is drawn.
+function renderCamMinimal(r, absT, denmPos) {
+  const i = lastIdx(r.c.positions, absT);
+  if (i < 0) {
+    camMinLine.setLatLngs([]);
+    if (map.hasLayer(camMover)) map.removeLayer(camMover);
+    return `  ·  CAM ${r.c.stationId}: no CAM received yet`;
+  }
+  const row = r.c.positions[i];
+  const pts = [[row[1], row[2]]];
+  const paths = r.c.paths || [];
+  const j = lastIdx(paths, absT);
+  let n = 0;
+  if (j >= 0) {
+    const ph = paths[j];
+    if (ph[0] !== row[0]) pts.push([ph[1], ph[2]]);   // referencePosition of that older CAM
+    const recent = ph[3].slice(0, CAM_MINIMAL_POINTS);
+    n = recent.length;
+    recent.forEach(p => pts.push([p[0], p[1]]));
+  }
+  camMinLine.setLatLngs(pts);
+  if (!map.hasLayer(camMinLine)) camMinLine.addTo(map);
+  camMover.setLatLng([row[1], row[2]]);
+  if (!map.hasLayer(camMover)) camMover.addTo(map);
+  const spd = row[3] !== null ? `${row[3].toFixed(0)} km/h` : '';
+  camMover.setTooltipContent(`CAM ${r.c.stationId} ${spd}`);
+  return `  ·  latest CAM ${r.c.stationId} ${(absT - row[0]).toFixed(1)} s ago, ` +
+    `${haversine({ lat: row[1], lon: row[2] }, denmPos).toFixed(1)} m from DENM position` +
+    `${spd ? ', ' + spd : ''}  ·  ${n} pathHistory point(s)`;
+}
+
 function renderCam(absT, denmPos) {
   const r = st.cam, show = r && $('showCam').checked;
+  const minimal = show && $('camMinimal').checked;
+  if (!minimal && map.hasLayer(camMinLine)) map.removeLayer(camMinLine);
+  if (minimal) {
+    renderCamPath(-Infinity);   // clears the full pathHistory
+    camDrawn.setLatLngs([]);
+    return renderCamMinimal(r, absT, denmPos);
+  }
   const phTxt = renderCamPath(absT);
   if (!show) {
     camDrawn.setLatLngs([]);
@@ -819,7 +870,8 @@ function applyDisplay() {
   document.querySelectorAll('.lbl').forEach(el => el.style.display = lbl ? '' : 'none');
   $('showPreview').checked ? layers.preview.addTo(map) : map.removeLayer(layers.preview);
   $('showEz').checked ? layers.ez.addTo(map) : map.removeLayer(layers.ez);
-  $('showCam').checked && $('showCamPreview').checked ? camLayers.preview.addTo(map) : map.removeLayer(camLayers.preview);
+  $('showCam').checked && $('showCamPreview').checked && !$('camMinimal').checked
+    ? camLayers.preview.addTo(map) : map.removeLayer(camLayers.preview);
 }
 
 // ─── Playback ──────────────────────────────────────────────────────────────
@@ -854,6 +906,7 @@ $('cap').onchange = () => { if (mode() === 'compress') { const frac = st.t / st.
 ['showLabels', 'showPreview', 'showEz', 'showCamPreview'].forEach(id => $(id).onchange = applyDisplay);
 $('showCam').onchange = () => { applyDisplay(); render(); };
 $('showCamPath').onchange = () => render();
+$('camMinimal').onchange = () => { applyDisplay(); render(); };
 layers.points.on('layeradd', ev => { if (!$('showLabels').checked) ev.layer.closeTooltip(); });
 
 renderFilter();
