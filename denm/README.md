@@ -179,6 +179,13 @@ needs an internet connection for the map tiles):
   DENM view also hides the eventPosition and eventZone; the minimal CAM view
   places the CAM marker on the latest received CAM instead of interpolating.
   Every point has a popup with its details.
+- **pathHistory warning**: while the shown pathHistory is implausible, a red
+  banner *CAM pathHistory inconsistent / broken* is shown on the map with the
+  CAM and the reason (the pathHistory itself is drawn as received). Checked on
+  the full received pathHistory: a point with `pathDeltaTime` 0, or a step of
+  more than 50 m at more than 250 km/h (shorter steps are ignored because of
+  GNSS jitter). In `TrafficManager.pcap`, four consecutive CAMs of 10101004
+  contain such a pathHistory (20 points with `pathDeltaTime` 0 and a 1 km jump)
 
 ```bash
 python denm_replay.py ../test-data/TrafficManager.pcap

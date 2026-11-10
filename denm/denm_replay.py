@@ -54,6 +54,9 @@ individually or together, each with the options points (off = line only),
 time labels, full preview and a minimal view (only the last n points, slider
 1..40, default 5). The CAM pathHistory is the one of the latest CAM with low
 frequency container, limited to the part from the replay start on.
+A warning banner "CAM pathHistory inconsistent / broken" is shown while the
+received pathHistory has a point with pathDeltaTime 0 or a step of more than
+50 m at more than 250 km/h; the pathHistory is still drawn as received.
 
 Reuses PCAP parsing, ASN.1 compilation and DENM extraction from denm_count.py,
 the event type text from denm_common.py and the delta position helper from
@@ -365,6 +368,10 @@ HTML_TEMPLATE = r'''<!doctype html>
   .layer .minrow input[type=range] { flex:1; min-width:60px; }
   .layer .nval { min-width:22px; text-align:right; font-variant-numeric:tabular-nums; }
   .layer.off .lopts { opacity:.45; }
+  #phwarn { position:absolute; top:10px; left:50%; transform:translateX(-50%); z-index:1000; display:none;
+            max-width:calc(100% - 120px); background:#b42318; color:#fff; border-radius:6px; padding:6px 12px;
+            font-size:13px; box-shadow:0 2px 8px rgba(0,0,0,.4); pointer-events:none; }
+  #phwarn b { display:block; }
   .cam { display:block; border:1px solid var(--line); border-radius:6px; padding:6px 8px; margin-bottom:6px;
          cursor:pointer; color:var(--text); }
   .cam .score { float:right; font-weight:600; font-variant-numeric: tabular-nums; }
@@ -502,6 +509,17 @@ class Track {
   }
 }
 const tracks = Object.fromEntries(Object.entries(LAYERS).map(([k, d]) => [k, new Track(d)]));
+
+// Warning banner on the map for an inconsistent / broken CAM pathHistory
+const phWarn = document.createElement('div');
+phWarn.id = 'phwarn';
+map.getContainer().appendChild(phWarn);
+function showPhWarning(text) {
+  if (!text) { phWarn.style.display = 'none'; return; }
+  phWarn.innerHTML = '<b>&#9888; CAM pathHistory inconsistent / broken</b>';
+  phWarn.appendChild(document.createTextNode(text));
+  phWarn.style.display = 'block';
+}
 
 function setMover(m, pos) {
   if (pos) { m.setLatLng([pos.lat, pos.lon]); if (!map.hasLayer(m)) m.addTo(map); }
@@ -812,6 +830,36 @@ const lastIdx = (arr, t, get = x => x[0]) => {   // index of the last element wi
 // part from the replay start (st.t0abs) on. Path entries: [rx, referencePosition lat, lon,
 // [[lat, lon, pathDeltaTime], ...]]; pathDeltaTime (10 ms) is the time to the previous point
 // (the referencePosition for the first one), so point i was passed at rx - sum(pathDeltaTime 1..i).
+// Plausibility of a received pathHistory (the full one, not only the part shown):
+//  - pathDeltaTime 0: two points at the same time
+//  - a step of more than PH_JUMP_MIN m at more than PH_MAX_SPEED km/h
+//    (short steps are ignored, GNSS jitter gives e.g. 2 m in 0.01 s)
+const PH_MAX_SPEED = 250, PH_JUMP_MIN = 50;
+function ranges(nums) {   // [2, 5, 6, 7] -> "2, 5–7"
+  const out = [];
+  for (let i = 0; i < nums.length; i++) {
+    let j = i;
+    while (j + 1 < nums.length && nums[j + 1] === nums[j] + 1) j++;
+    out.push(j > i ? `${nums[i]}–${nums[j]}` : `${nums[i]}`);
+    i = j;
+  }
+  return out.join(', ');
+}
+function phIssues(ph) {
+  if (ph.issues) return ph.issues;
+  const zero = [], fast = [];
+  let prev = { lat: ph[1], lon: ph[2] };
+  ph[3].forEach((p, i) => {
+    const cur = { lat: p[0], lon: p[1] }, d = haversine(prev, cur);
+    if (p[2] === 0) zero.push(i + 1);
+    else if (p[2] && d > PH_JUMP_MIN && d / (p[2] / 100) * 3.6 > PH_MAX_SPEED)
+      fast.push(`point ${i + 1}: ${d.toFixed(0)} m in ${(p[2] / 100).toFixed(2)} s (${(d / (p[2] / 100) * 3.6).toFixed(0)} km/h)`);
+    prev = cur;
+  });
+  ph.issues = [...(zero.length ? [`${zero.length} point(s) with pathDeltaTime 0 (point ${ranges(zero)})`] : []), ...fast];
+  return ph.issues;
+}
+
 function phPoints(r, absT) {
   const paths = r.c.paths || [];
   const j = lastIdx(paths, absT);
@@ -843,6 +891,7 @@ function renderCam(absT, denmPos) {
   const r = st.cam, oc = opts.cam, op = opts.ph;
   if (!r) {
     tracks.cam.update([], null, oc); tracks.ph.update([], null, op);
+    showPhWarning(null);
     setMover(camMover, null);
     return '';
   }
@@ -865,6 +914,9 @@ function renderCam(absT, denmPos) {
   // pathHistory
   const php = phPoints(r, absT);
   tracks.ph.update(php.pts, null, op);
+  const issues = op.show && php.ph ? phIssues(php.ph) : [];
+  showPhWarning(issues.length ? `CAM ${r.c.stationId} received ${new Date(php.ph[0] * 1000).toISOString().slice(11, 23)} UTC: ` +
+                                issues.join('; ') : null);
   if (op.show) {
     const n = php.pts.filter(p => !p.anchor).length;
     txt += php.ph ? `  ·  pathHistory ${n} of ${php.ph[3].length} pts since replay start` : '  ·  pathHistory: none yet';
