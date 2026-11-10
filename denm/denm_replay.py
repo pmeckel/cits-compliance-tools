@@ -12,17 +12,20 @@ Selection:
     by default all are selected except 15 (roadSideUnit)
   - one entry per originatingStationId; every DENM with a new detectionTime
     (first reception, any sequenceNumber) is one step of the replay
+  - static actionIds (eventPosition, traces and eventZone the same in all its
+    DENMs, e.g. roadside units): only the most recent DENM is shown, with
+    eventPosition, all traces and eventZone, for the whole replay
 
 Layers (each with colour, points or line only, time labels, full preview and a
 minimal view with only the last n points; shown individually or together):
   - DENM: eventPositions of all DENMs up to the replay time (labels: time to the
     previous DENM, "seq n" at a new sequenceNumber); options eventZone of the
-    latest DENM, eventPositionHeading arrows and smoothing (as for the CAM)
+    latest DENM, eventPositionHeading arrows and smoothing (as for the CAM, on by default)
   - DENM traces: first trace (location.detectionZonesToEventPosition) of the latest
     DENM, only the part from the replay start on (labels: pathDeltaTime)
   - CAM: positions of the matched CAM station; options heading arrows and
     smoothing (Kalman filter + RTS smoother on position, time and, weakly,
-    speed/heading, cubic interpolation between CAMs; off by default)
+    speed/heading, cubic interpolation between CAMs; on by default)
   - CAM pathHistory: pathHistory of the latest CAM with low frequency container,
     only the part from the replay start on (labels: pathDeltaTime); a warning
     banner "CAM pathHistory inconsistent / broken" is shown while the received
@@ -365,21 +368,31 @@ def collect(pcap_files: list, asn_dir: Path, cam_asn_dir) -> tuple:
     result = []
     for sid in sorted(updates):
         ups = sorted(updates[sid], key=lambda u: u['rx'])
-        rows = [[u['rx'], u['lat'], u['lon'], u['spd'], u['hdg'], None] for u in ups]
+        # static actionIds: eventPosition, traces and eventZone the same in all DENMs of the actionId
+        by_seq: dict = {}
+        for u in ups:
+            by_seq.setdefault(u['seq'], set()).add(json.dumps(
+                [u['lat'], u['lon'], [[q[:2] for q in t] for t in u['traces']], u['ez']]))
+        static = sorted(seq for seq, geo in by_seq.items() if len(geo) == 1)
+        moving = [u for u in ups if u['seq'] not in static]
+        rows = [[u['rx'], u['lat'], u['lon'], u['spd'], u['hdg'], None] for u in moving]
         smooth_track(rows)
-        for u, r in zip(ups, rows):
+        for u, r in zip(moving, rows):
             u['s'] = r[6:10]   # smoothed eventPosition lat, lon, velocity east, north (m/s)
+        for u in ups:
+            u.setdefault('s', [u['lat'], u['lon'], 0.0, 0.0])
         with_type = [u for u in ups if u['cause']]
         result.append({
             'stationId': sid, 'stationTypeNo': st_type[sid][0], 'stationType': st_type[sid][1],
             'eventType': (with_type[-1] if with_type else ups[-1])['eventType'],
-            'seqs': sorted({u['seq'] for u in ups}), 'denms': n_denms[sid], 'updates': ups,
+            'seqs': sorted({u['seq'] for u in ups}), 'staticSeqs': static, 'denms': n_denms[sid], 'updates': ups,
         })
 
     print(f'\nUnique originatingStationIds: {len(result)}')
     for r in result:
         print(f'  {r["stationId"]:>12}  {r["stationType"]:<20}  DENMs {r["denms"]:>5}  '
-              f'new detectionTimes {len(r["updates"]):>5}  {r["eventType"]}  '
+              f'new detectionTimes {len(r["updates"]):>5}  static actionIds {len(r["staticSeqs"])}/{len(r["seqs"])}  '
+              f'{r["eventType"]}  '
               f'(sequenceNumbers: {", ".join(map(str, r["seqs"]))})')
 
     cam_list = []
@@ -550,12 +563,12 @@ const tStr = t => new Date(t * 1000).toISOString().slice(11, 23);
 const LAYERS = {
   denm: { title: 'DENM', sub: 'eventPositions of all DENMs', lblText: 'time to prev. DENM',
           def: { show: true, color: '#ff3b30', points: true, labels: false, preview: false, minimal: true, n: 8,
-                 ez: true, ezColor: '#12b76a', heading: false, smooth: false } },
+                 ez: true, ezColor: '#12b76a', heading: false, smooth: true } },
   dtr:  { title: 'DENM traces', sub: 'latest DENM, from replay start', lblText: 'pathDeltaTime',
           def: { show: true, color: '#ffb020', points: true, labels: true, preview: false, minimal: true, n: 8 } },
   cam:  { title: 'CAM', sub: 'positions of the matched CAM station', lblText: 'time to prev. CAM',
           def: { show: true, color: '#2e90fa', points: true, labels: false, preview: false, minimal: true, n: 15,
-                 smooth: false, heading: false } },
+                 smooth: true, heading: false } },
   ph:   { title: 'CAM pathHistory', sub: 'latest CAM, from replay start', lblText: 'pathDeltaTime',
           def: { show: true, color: '#7cfc00', points: true, labels: false, preview: false, minimal: true, n: 15 } },
 };
@@ -657,7 +670,7 @@ function showPhWarning(text) {
 
 // t0abs: capture time (s) of replay time 0 (just before the first DENM of the station).
 // ref: what the CAMs are matched against ({pts: [{lat, lon, t}], t0, t1, cause, stationId, stationTypeNo})
-const st = { station: null, denmPts: [], denmPtsSmooth: [], denmRows: [], t: 0, total: 0, playing: false, speed: 1, last: null,
+const st = { station: null, U: [], staticDenms: [], denmPts: [], denmPtsSmooth: [], denmRows: [], t: 0, total: 0, playing: false, speed: 1, last: null,
              t0abs: 0, cam: null, camRank: [], ref: null, ezIdx: null };
 
 // ─── Station selection ─────────────────────────────────────────────────────
@@ -689,7 +702,7 @@ function renderStations() {
     div.className = 'station' + (st.station === s ? ' sel' : '');
     div.innerHTML = `<b>${s.stationId}</b> &middot; ${s.stationType}<br>
       <span class="muted">${s.eventType}<br>${s.updates.length} DENM(s) with a new detectionTime
-      &middot; sequenceNumber(s) ${s.seqs.join(', ')}</span>`;
+      &middot; sequenceNumber(s) ${s.seqs.join(', ')}${s.staticSeqs.length ? ` (${s.staticSeqs.length === s.seqs.length ? 'all' : s.staticSeqs.length} static)` : ''}</span>`;
     div.onclick = () => selectStation(s);
     box.appendChild(div);
   }
@@ -701,23 +714,24 @@ function selectStation(s) {
   pause();
   st.station = s;
   renderStations();
-  const U = s.updates;
-  st.t0abs = U[0].rx - 1;
-  st.total = U[U.length - 1].rx + 1 - st.t0abs;
+  const A = s.updates;
+  st.t0abs = A[0].rx - 1;
+  st.total = A[A.length - 1].rx + 1 - st.t0abs;
   st.ezIdx = null;
-  const causes = U.filter(u => u.cause).map(u => u.cause);
-  st.ref = { pts: U.map(u => ({ lat: u.lat, lon: u.lon, t: u.rx })), t0: U[0].rx, t1: U[U.length - 1].rx,
+  const causes = A.filter(u => u.cause).map(u => u.cause);
+  st.ref = { pts: A.map(u => ({ lat: u.lat, lon: u.lon, t: u.rx })), t0: A[0].rx, t1: A[A.length - 1].rx,
              cause: causes.length ? causes[causes.length - 1] : null, stationId: s.stationId, stationTypeNo: s.stationTypeNo };
+  // Static actionIds (eventPosition, traces and eventZone never change): only their most recent DENM is
+  // shown, from the start; the replay uses the DENMs of the moving actionIds (st.U)
+  const stat = new Set(s.staticSeqs);
+  st.staticDenms = s.staticSeqs.map(seq => { const us = A.filter(u => u.seq === seq); return { ...us[us.length - 1], n: us.length }; });
+  const U = st.U = A.filter(u => !stat.has(u.seq));
   st.denmRows = U.map(u => [u.rx, u.lat, u.lon, u.spd, u.hdg, null, ...u.s]);
   st.denmPts = U.map((u, i) => {
     const prev = i ? U[i - 1] : null, newSeq = !prev || prev.seq !== u.seq;
     return { id: i, t: u.rx, lat: u.lat, lon: u.lon, hdg: u.hdg,
              lbl: newSeq ? `seq ${u.seq}` : `${(u.rx - prev.rx).toFixed(2)} s`,
-             popup: `<b>DENM ${s.stationId}/${u.seq}</b>${u.term ? ' (termination)' : ''}<br>received ${tStr(u.rx)} UTC` +
-                    (prev ? `<br>time to previous DENM: ${(u.rx - prev.rx).toFixed(3)} s` : '') +
-                    `<br>${u.eventType}<br>eventPositionHeading ${u.hdg ?? 'n/a'}°` +
-                    (u.hdg != null ? ` (confidence ${u.hdgConf === 127 ? 'unavailable' : (u.hdgConf / 10) + '°'})` : '') +
-                    `<br>eventSpeed ${u.spd ?? 'n/a'} km/h<br>traces: ${u.traces.map(t => t.length).join('/') || '-'} PathPoints` +
+             popup: denmPopup(s.stationId, u, prev) +
                     `<br>smoothed position ${haversine(u, { lat: u.s[0], lon: u.s[1] }).toFixed(1)} m from the received one` };
   });
   // smoothed track: curve samples ('via') between the DENMs, markers stay at the received eventPositions
@@ -733,7 +747,7 @@ function selectStation(s) {
   Object.values(tracks).forEach(tr => tr.reset());
   ezLayer.clearLayers();
 
-  // Ticks at the start of every sequenceNumber
+  // Ticks at the start of every (moving) sequenceNumber
   const ticks = $('ticks');
   ticks.innerHTML = '';
   U.forEach((u, i) => {
@@ -745,18 +759,68 @@ function selectStation(s) {
   });
 
   const seqs = [];
-  U.forEach(u => {
+  A.forEach(u => {
     let q = seqs[seqs.length - 1];
     if (!q || q.seq !== u.seq) seqs.push(q = { seq: u.seq, n: 0, from: u.rx, to: u.rx, term: false });
     q.n++; q.to = u.rx; q.term = q.term || u.term;
   });
   $('info').innerHTML = `originatingStationId ${s.stationId}<br>stationType ${s.stationType}<br>
-    ${U.length} DENMs with a new detectionTime from ${tStr(U[0].rx)} to ${tStr(U[U.length - 1].rx)} UTC
-    (capture clock)<br>` + seqs.map(q => `seq ${q.seq}: ${q.n} DENM(s), ${(q.to - q.from).toFixed(1)} s${q.term ? ', terminated' : ''}`).join('<br>');
+    ${A.length} DENMs with a new detectionTime from ${tStr(A[0].rx)} to ${tStr(A[A.length - 1].rx)} UTC
+    (capture clock)<br>` + seqs.map(q => `seq ${q.seq}: ${q.n} DENM(s), ${(q.to - q.from).toFixed(1)} s${q.term ? ', terminated' : ''}` +
+    (stat.has(q.seq) ? ' – static, most recent DENM shown' : '')).join('<br>');
 
   st.t = 0;
   rankCams();   // selects the CAM, updates the previews and renders
-  map.fitBounds(L.latLngBounds(U.map(u => [u.lat, u.lon])), { padding: [40, 40], maxZoom: 19 });
+  const bounds = L.latLngBounds(A.map(u => [u.lat, u.lon]));
+  for (const u of st.staticDenms) {
+    u.traces.forEach(tr => tr.forEach(q => bounds.extend([q[0], q[1]])));
+    u.ez.forEach(q => bounds.extend(q));
+  }
+  map.fitBounds(bounds, { padding: [40, 40], maxZoom: 19 });
+}
+
+function denmPopup(sid, u, prev) {
+  return `<b>DENM ${sid}/${u.seq}</b>${u.term ? ' (termination)' : ''}<br>received ${tStr(u.rx)} UTC` +
+    (prev ? `<br>time to previous DENM: ${(u.rx - prev.rx).toFixed(3)} s` : '') +
+    `<br>${u.eventType}<br>eventPositionHeading ${u.hdg ?? 'n/a'}°` +
+    (u.hdg != null ? ` (confidence ${u.hdgConf === 127 ? 'unavailable' : (u.hdgConf / 10) + '°'})` : '') +
+    `<br>eventSpeed ${u.spd ?? 'n/a'} km/h<br>traces: ${u.traces.map(t => t.length).join('/') || '-'} PathPoints`;
+}
+
+// Static DENMs: eventPosition (DENM card), all traces (DENM traces card) and eventZone of the most
+// recent DENM of every static actionId, shown for the whole replay
+const staticLayers = { denm: L.layerGroup(), dtr: L.layerGroup(), ez: L.layerGroup() };
+function buildStatic() {
+  Object.values(staticLayers).forEach(g => g.clearLayers());
+  if (!st.station) return;
+  const sid = st.station.stationId, od = opts.denm, ot = opts.dtr;
+  for (const u of st.staticDenms) {
+    if (u.ez.length)
+      L.polyline([[u.lat, u.lon], ...u.ez], { color: od.ezColor, weight: 4, opacity: .85 }).addTo(staticLayers.ez);
+    u.traces.forEach((tr, ti) => {
+      if (!tr.length) return;
+      L.polyline([[u.lat, u.lon], ...tr.map(q => [q[0], q[1]])], { color: ot.color, weight: 3 }).addTo(staticLayers.dtr);
+      if (!ot.points && !ot.labels) return;
+      tr.forEach((q, k) => {
+        const m = ot.points
+          ? L.circleMarker([q[0], q[1]], { radius: 4, color: '#fff', weight: 1.5, fillColor: ot.color, fillOpacity: 1 })
+          : L.circleMarker([q[0], q[1]], { radius: 2, stroke: false, fillOpacity: 0 });
+        const dtTxt = q[2] != null ? `${(q[2] / 100).toFixed(2)} s` : 'n/a';
+        m.bindPopup(`<b>DENM ${sid}/${u.seq} trace ${ti + 1} point ${k + 1}</b><br>pathDeltaTime: ${q[2] ?? 'n/a'}` +
+                    (q[2] != null ? ` (${dtTxt})` : ''));
+        if (ot.labels && q[2] != null)   // no 'n/a' labels on static traces (often without pathDeltaTime)
+          m.bindTooltip(dtTxt, { permanent: true, direction: 'right', className: 'tl lbl-dtr', offset: [6, 0] });
+        m.addTo(staticLayers.dtr);
+      });
+    });
+    if (od.heading && u.hdg != null)
+      L.marker([u.lat, u.lon], { icon: arrowIcon(u.hdg, od.color), interactive: false, keyboard: false }).addTo(staticLayers.denm);
+    const m = L.circleMarker([u.lat, u.lon], { radius: 7, color: '#fff', weight: 2, fillColor: od.color, fillOpacity: 1 })
+      .bindPopup(denmPopup(sid, u, null) +
+                 `<br><i>static: eventPosition, traces and eventZone the same in all ${u.n} DENM(s) of this actionId; most recent DENM shown</i>`);
+    if (od.labels) m.bindTooltip(`seq ${u.seq}`, { permanent: true, direction: 'top', className: 'tl lbl-denm', offset: [0, -8] });
+    m.addTo(staticLayers.denm);
+  }
 }
 
 // ─── CAM matching ──────────────────────────────────────────────────────────
@@ -930,9 +994,9 @@ function recordedPoints(rx, refLat, refLon, path, idPrefix, title) {
   return out;
 }
 
-// DENM traces: first trace of the latest DENM with a trace (the station's own path)
+// DENM traces: first trace of the latest (moving) DENM with a trace (the station's own path)
 function dtrPoints(absT) {
-  const U = st.station.updates;
+  const U = st.U;
   let j = lastIdx(U, absT, u => u.rx);
   while (j >= 0 && !(U[j].traces.length && U[j].traces[0].length)) j--;
   if (j < 0) return { pts: [], u: null };
@@ -982,7 +1046,7 @@ function phPoints(r, absT) {
 function updatePreviews() {
   const r = st.cam, t1 = st.ref ? st.ref.t1 : 0;
   tracks.denm.setPreview(!st.station ? [] : opts.denm.smooth ? st.denmPtsSmooth.map(p => [p.lat, p.lon])
-                                                             : st.station.updates.map(u => [u.lat, u.lon]));
+                                                             : st.U.map(u => [u.lat, u.lon]));
   tracks.dtr.setPreview(st.station ? dtrPoints(t1).pts.map(p => [p.lat, p.lon]) : []);
   tracks.cam.setPreview(r ? camRows(r).map(p => [p.lat, p.lon]) : []);
   tracks.ph.setPreview(r ? phPoints(r, t1).pts.map(p => [p.lat, p.lon]) : []);
@@ -993,7 +1057,7 @@ function renderEventZone(i) {   // eventZone of DENM update i
   if (i === st.ezIdx) return;
   st.ezIdx = i;
   ezLayer.clearLayers();
-  const u = i >= 0 ? st.station.updates[i] : null;
+  const u = i >= 0 ? st.U[i] : null;
   if (u && u.ez.length)
     L.polyline([[u.lat, u.lon], ...u.ez], { color: opts.denm.ezColor, weight: 4, opacity: .85 }).addTo(ezLayer);
 }
@@ -1040,7 +1104,7 @@ function renderCam(absT, denmPos) {
 
 function render() {
   if (!st.station) return;
-  const U = st.station.updates;
+  const U = st.U;
   const t = Math.min(Math.max(st.t, 0), st.total), absT = st.t0abs + t;
   const i = lastIdx(U, absT, u => u.rx);
   const u = i >= 0 ? U[i] : null;
@@ -1063,8 +1127,9 @@ function render() {
   const camTxt = renderCam(absT, dpos);
   let txt = `${t.toFixed(1)} / ${st.total.toFixed(1)} s  ·  ${tStr(absT)} UTC  ·  `;
   txt += u ? `DENM ${st.station.stationId}/${u.seq}${u.term ? ' TERMINATED' : ''}, ${(absT - u.rx).toFixed(1)} s ago, ` +
-             `heading ${u.hdg ?? 'n/a'}°, ${u.spd ?? 'n/a'} km/h` : 'no DENM yet';
-  if (opts.dtr.show) {
+             `heading ${u.hdg ?? 'n/a'}°, ${u.spd ?? 'n/a'} km/h` : U.length ? 'no DENM yet' : 'no moving DENM';
+  if (st.staticDenms.length) txt += `  ·  ${st.staticDenms.length} static DENM(s): most recent shown`;
+  if (opts.dtr.show && U.length) {
     const n = dt.pts.filter(p => !p.anchor).length;
     txt += dt.u ? `  ·  trace ${n} of ${dt.u.traces[0].length} pts since replay start` : '  ·  trace: none yet';
   }
@@ -1079,6 +1144,10 @@ function applyDisplay() {
   }
   const d = opts.denm;   // the minimal DENM view hides the eventZone
   d.show && !d.minimal && d.ez ? ezLayer.addTo(map) : map.removeLayer(ezLayer);
+  buildStatic();
+  d.show ? staticLayers.denm.addTo(map) : map.removeLayer(staticLayers.denm);
+  opts.dtr.show ? staticLayers.dtr.addTo(map) : map.removeLayer(staticLayers.dtr);
+  d.show && d.ez ? staticLayers.ez.addTo(map) : map.removeLayer(staticLayers.ez);
   document.querySelectorAll('.layer').forEach(el => el.classList.toggle('off', !opts[el.dataset.layer].show));
 }
 

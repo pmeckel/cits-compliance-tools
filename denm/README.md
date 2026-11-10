@@ -140,6 +140,12 @@ connection for the map tiles):
   the capture (receiver) clock; DENMs and CAMs are aligned on this clock, since
   station clocks can be far off. In `TrafficManager.pcap`, 10101004 sends 485
   such DENMs in sequenceNumbers 40–43 over 139 s (every 0.25–1 s)
+- **static DENMs**: if eventPosition, traces and eventZone are the same in all
+  DENMs of an actionId (typical for roadside units), only its most recent DENM
+  is shown, for the whole replay: eventPosition (DENM layer), all traces (DENM
+  traces layer) and eventZone; the replay itself uses the moving actionIds. In
+  `TrafficManager.pcap` all actionIds of the 4 roadSideUnits are static (e.g.
+  1040017: 10 actionIds, 1,288 DENMs)
 - **timeline slider** (ticks at the start of every sequenceNumber) to move back
   and forth, **speed slider** (0.1x … 50x); the status line shows the capture
   time, the current sequenceNumber (and termination), `eventPositionHeading`,
@@ -185,10 +191,10 @@ connection for the map tiles):
 
   Defaults at start: all four layers shown with points, in the minimal view
   (DENM and DENM traces 8 points, CAM and CAM pathHistory 15 points), no full
-  previews, no heading arrows, no smoothing; labels only for the DENM traces
+  previews, no heading arrows, smoothing on (DENM and CAM); labels only for the DENM traces
   (`pathDeltaTime`); eventZone shown. The **Reset view** button restores these
   defaults and colours without changing the selection or the replay time.
-- **Smoothing** (DENM and CAM option, off by default): the received CAM
+- **Smoothing** (DENM and CAM option, on by default): the received CAM
   positions and DENM eventPositions jitter by about 1–1.5 m from message to
   message; with smoothing on, the track is smoothed (Kalman filter + RTS smoother, constant velocity model) using the
   positions, the time between the messages and speed/heading (DENM:
