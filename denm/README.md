@@ -127,7 +127,8 @@ python denm_to_kml.py capture.pcap --kmz -o output
 
 ### `denm_replay.py` — DENM / CAM replay on a satellite map
 
-Writes a self-contained HTML page (`denm_replay.html`, opened in the browser)
+Writes a self-contained HTML page (`<pcap name>_denm_replay.html` in the
+current directory unless `-o` is given, opened in the browser)
 that replays all DENMs of a station in real time, together with the matching
 CAMs, on a satellite map (Leaflet + Esri World Imagery; needs an internet
 connection for the map tiles):

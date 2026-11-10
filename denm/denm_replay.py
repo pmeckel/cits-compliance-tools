@@ -1319,8 +1319,9 @@ def main() -> None:
         epilog=__doc__)
     parser.add_argument('pcap', nargs='+', metavar='PCAP',
                         help='Input PCAP file(s); wildcards such as *.pcap are expanded')
-    parser.add_argument('-o', '--output', default='denm_replay.html', metavar='FILE',
-                        help='Output HTML file (default: denm_replay.html)')
+    parser.add_argument('-o', '--output', metavar='FILE',
+                        help='Output HTML file (default: named after the PCAP, <pcap name>_denm_replay.html '
+                             'in the current directory; several PCAPs: <first pcap name>_and_<n>_more_denm_replay.html)')
     parser.add_argument('--station', type=int, metavar='ID',
                         help='Preselect this originatingStationId in the page')
     parser.add_argument('--no-open', action='store_true',
@@ -1339,13 +1340,17 @@ def main() -> None:
         print(f'Error: {e}', file=sys.stderr)
         sys.exit(1)
 
+    pcaps = expand_pcaps(args.pcap)
     data = {
-        'source': ', '.join(Path(p).name for p in expand_pcaps(args.pcap)),
+        'source': ', '.join(Path(p).name for p in pcaps),
         'stations': stations,
         'cams': cams,
         'preselect': args.station,
     }
-    out = args.output if args.output.endswith('.html') else args.output + '.html'
+    if args.output:
+        out = args.output if args.output.endswith('.html') else args.output + '.html'
+    else:   # named after the PCAP(s)
+        out = Path(pcaps[0]).stem + (f'_and_{len(pcaps) - 1}_more' if len(pcaps) > 1 else '') + '_denm_replay.html'
     html = (HTML_TEMPLATE.replace('__RSU__', str(RSU_STATION_TYPE))
             .replace('__CAM_MAX_GAP__', str(CAM_MAX_GAP))
             .replace('__DATA__', json.dumps(data).replace('</', '<\\/')))
