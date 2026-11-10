@@ -164,7 +164,7 @@ connection for the map tiles):
 
   | Layer | Shows | Time label | Extra options |
   |-------|-------|------------|---------------|
-  | DENM | eventPositions of all DENMs up to the replay time | time to the previous DENM (`seq n` at a new sequenceNumber) | eventZone of the latest DENM (own colour), `eventPositionHeading` arrows |
+  | DENM | eventPositions of all DENMs up to the replay time | time to the previous DENM (`seq n` at a new sequenceNumber) | eventZone of the latest DENM (own colour), `eventPositionHeading` arrows, smoothing |
   | DENM traces | first trace (`detectionZonesToEventPosition`) of the latest DENM, from its eventPosition backwards | `pathDeltaTime` | – |
   | CAM | received positions of the matched CAM station | time to the previous CAM | `heading` arrows, smoothing |
   | CAM pathHistory | `pathHistory` of the latest CAM with a low frequency container, from its referencePosition backwards | `pathDeltaTime` | – |
@@ -185,18 +185,19 @@ connection for the map tiles):
 
   Defaults at start: all four layers shown with points, in the minimal view
   (DENM and DENM traces 8 points, CAM and CAM pathHistory 15 points), no full
-  previews, no heading arrows, no CAM smoothing; labels only for the DENM traces
+  previews, no heading arrows, no smoothing; labels only for the DENM traces
   (`pathDeltaTime`); eventZone shown. The **Reset view** button restores these
   defaults and colours without changing the selection or the replay time.
-- **CAM smoothing** (CAM option, off by default): the received CAM positions
-  jitter by about 1–1.5 m from CAM to CAM; with smoothing on, the CAM track is
-  smoothed (Kalman filter + RTS smoother, constant velocity model) using the
-  positions, the time between the CAMs and speed/heading; speed/heading only
+- **Smoothing** (DENM and CAM option, off by default): the received CAM
+  positions and DENM eventPositions jitter by about 1–1.5 m from message to
+  message; with smoothing on, the track is smoothed (Kalman filter + RTS smoother, constant velocity model) using the
+  positions, the time between the messages and speed/heading (DENM:
+  `eventSpeed`, `eventPositionHeading`); speed/heading only
   weakly, since the heading is often off at low speed. Between two CAMs the
   position is interpolated with a cubic curve along the smoothed velocity, so
-  the CAM marker moves continuously. The CAM points stay at the received
-  positions (the popup gives the distance to the smoothed one; in
-  `TrafficManager.pcap` 0.5 m median, 2 m max). The CAM matching always uses
+  the marker moves continuously. The points stay at the received positions
+  (the popup gives the distance to the smoothed one; in `TrafficManager.pcap`
+  CAM 0.5 m median, 2 m max; DENM 10101004 0.4 m median, 4.5 m max). The CAM matching always uses
   the received positions
 - **pathHistory warning**: while the shown pathHistory is implausible, a red
   banner *CAM pathHistory inconsistent / broken* is shown on the map with the
