@@ -184,7 +184,12 @@ connection for the map tiles):
   so they are empty at the start and build up during the replay. Point *i* was
   passed at the reception time minus the sum of `pathDeltaTime` 1…*i*
   (`pathDeltaTime` is the time to the previous point, to the eventPosition /
-  referencePosition for the first one).
+  referencePosition for the first one). The overall checkbox **show points
+  older than replay** (off by default, also reset by *Reset view*) shows the
+  full received traces / pathHistory, including the points passed before the
+  replay start. Needed e.g. for a slow or standing station whose whole trace
+  lies before its first DENM (in `Befahrungen_August2026_1.pcap`, the trace of
+  10100194 starts 97 s before its first DENM and covers 14 minutes).
 
   Options per layer: **colour** (picker), **points** (off = line only; for the DENM also the eventZone points), **time
   labels**, **full preview** (faint dashed line of what the layer shows at the

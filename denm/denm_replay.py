@@ -508,6 +508,8 @@ HTML_TEMPLATE = r'''<!doctype html>
     <h2>CAM match</h2>
     <div id="cams" class="muted"></div>
     <h2>Visualize</h2>
+    <label class="opt" title="DENM traces and CAM pathHistory: also the points passed before the replay start">
+      <input type="checkbox" id="showOld"> show points older than replay</label>
     <div id="layercards"></div>
     <button id="resetView" title="Layer options and colours back to the defaults">Reset view</button>
     <h2>Info</h2>
@@ -675,7 +677,7 @@ function showPhWarning(text) {
 
 // t0abs: capture time (s) of replay time 0 (just before the first DENM of the station).
 // ref: what the CAMs are matched against ({pts: [{lat, lon, t}], t0, t1, cause, stationId, stationTypeNo})
-const st = { station: null, U: [], staticAll: [], staticSel: null, staticDenms: [], denmPts: [], denmPtsSmooth: [], denmRows: [], t: 0, total: 0, playing: false, speed: 1, last: null,
+const st = { showOld: false, station: null, U: [], staticAll: [], staticSel: null, staticDenms: [], denmPts: [], denmPtsSmooth: [], denmRows: [], t: 0, total: 0, playing: false, speed: 1, last: null,
              t0abs: 0, cam: null, camRank: [], ref: null, ezIdx: null };
 
 // ─── Station selection ─────────────────────────────────────────────────────
@@ -1012,7 +1014,7 @@ function recordedPoints(rx, refLat, refLon, path, idPrefix, title) {
   let acc = 0;
   path.forEach((p, i) => {
     if (p[2] !== null) acc += p[2] / 100;
-    if (rx - acc < st.t0abs) return;
+    if (rx - acc < st.t0abs && !st.showOld) return;   // passed before the replay start
     out.push({ id: `${idPrefix}:${i}`, lat: p[0], lon: p[1],
                lbl: p[2] !== null ? `${(p[2] / 100).toFixed(2)} s` : 'n/a',
                popup: `<b>${title} point ${i + 1}</b><br>pathDeltaTime: ${p[2] ?? 'n/a'}` +
@@ -1138,7 +1140,7 @@ function renderCam(absT, denmPos) {
   showPhWarning(issues.length ? `CAM ${r.c.stationId} received ${tStr(php.ph[0])} UTC: ` + issues.join('; ') : null);
   if (op.show) {
     const n = php.pts.filter(p => !p.anchor).length;
-    txt += php.ph ? `  ·  pathHistory ${n} of ${php.ph[3].length} pts since replay start` : '  ·  pathHistory: none yet';
+    txt += php.ph ? `  ·  pathHistory ${n} of ${php.ph[3].length} pts${st.showOld ? "" : " since replay start"}` : '  ·  pathHistory: none yet';
   }
   return txt;
 }
@@ -1172,7 +1174,7 @@ function render() {
   if (st.staticDenms.length) txt += `  ·  static DENM ${st.station.stationId}/${st.staticSel}: most recent of ${st.staticDenms[0].n} shown`;
   if (opts.dtr.show && U.length) {
     const n = dt.pts.filter(p => !p.anchor).length;
-    txt += dt.u ? `  ·  trace ${n} of ${dt.u.traces[0].length} pts since replay start` : '  ·  trace: none yet';
+    txt += dt.u ? `  ·  trace ${n} of ${dt.u.traces[0].length} pts${st.showOld ? "" : " since replay start"}` : '  ·  trace: none yet';
   }
   $('status').textContent = txt + camTxt;
 }
@@ -1269,9 +1271,19 @@ $('speed').oninput = () => {
   st.speed = Math.pow(10, +$('speed').value);
   $('speedval').textContent = (st.speed < 10 ? st.speed.toFixed(1) : st.speed.toFixed(0)) + 'x';
 };
+// Show points older than replay: DENM traces and CAM pathHistory also show the points passed before
+// the replay start (e.g. a DENM whose whole trace lies before its first reception)
+function setShowOld(on) {
+  st.showOld = $('showOld').checked = on;
+  tracks.dtr.reset();
+  tracks.ph.reset();
+}
+$('showOld').onchange = () => { setShowOld($('showOld').checked); updatePreviews(); render(); };
+
 // Reset view: layer options and colours back to the defaults (selection and replay time are kept)
 $('resetView').onclick = () => {
   for (const [k, d] of Object.entries(LAYERS)) Object.assign(opts[k], d.def);
+  setShowOld(false);
   renderLayerCards();
   applyColors();
   updatePreviews();
