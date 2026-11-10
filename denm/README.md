@@ -128,91 +128,76 @@ python denm_to_kml.py capture.pcap --kmz -o output
 ### `denm_replay.py` — DENM / CAM replay on a satellite map
 
 Writes a self-contained HTML page (`denm_replay.html`, opened in the browser)
-that replays DENMs, together with the matching CAMs, on a satellite map
-(Leaflet + Esri World Imagery; needs an internet connection for the map tiles).
-Two views:
-
-- **All DENMs of the station in real time** (default): only the
-  originatingStationId is selected. Every new DENM of the station (first
-  reception of a new `detectionTime`, any sequenceNumber) is shown on the
-  capture clock: its eventPosition (track of all eventPositions, labeled with
-  the time to the previous DENM, or `seq n` at a new sequenceNumber), the trace
-  and eventZone of the current DENM, and in the status line sequenceNumber,
-  termination, `eventPositionHeading` and `eventSpeed`. The timeline has a tick
-  at the start of every sequenceNumber. The CAMs are matched against the
-  eventPositions at their reception times (in `TrafficManager.pcap`, 10101004:
-  485 DENM updates in sequenceNumbers 40–43, CAM of the same station 1.4 m
-  median from the eventPositions)
-- **Trace replay of a single DENM**: as described below
-
-Common to both views:
+that replays all DENMs of a station in real time, together with the matching
+CAMs, on a satellite map (Leaflet + Esri World Imagery; needs an internet
+connection for the map tiles):
 
 - **stationType filter**: checkboxes for all stationTypes in the capture; all
   are selected by default except `roadSideUnit(15)`
-- **one entry per originatingStationId**, preselecting the DENM with the most
-  trace points (tie: highest sequenceNumber); the other sequenceNumbers of the
-  station can be selected from a list (per sequenceNumber the DENM with the most
-  trace points is used)
-- **all traces** of the selected DENM are listed with their number of PathPoints
-- the replay starts at the **last PathPoint** and moves to the eventPosition,
-  drawing the line and marking every reached PathPoint with its
-  `pathDeltaTime` (s); `pathDeltaTime` is the travel time to the previous
-  PathPoint (to the eventPosition for the first one), a missing one is estimated
-  from the median speed of the trace and labeled `n/a`
-- **replay modes**: real time, real time with compressed pauses (segments longer
-  than an adjustable cap are shortened), and point by point (1 s per PathPoint)
-- **timeline slider** (ticks at the PathPoints) to move back and forth and a
-  **speed slider** (0.1x … 50x)
-- **CAM in parallel**: all CAMs of the capture are decoded (ASN.1 in
-  [`../cam/ASN/`](../cam/ASN/)) and the CAM station that matches the selected
-  DENM trace best is selected automatically and replayed in parallel (blue),
-  with the distance to the DENM position in the status line. DENM and CAMs are
-  aligned on the capture (receiver) clock, since station clocks can be far off.
-  Every candidate gets a score out of 100 with the details listed:
+- **one entry per originatingStationId**: only the station is selected. Every
+  DENM of the station with a new `detectionTime` (first reception, any
+  sequenceNumber) is one step of the replay, placed at its reception time on
+  the capture (receiver) clock; DENMs and CAMs are aligned on this clock, since
+  station clocks can be far off. In `TrafficManager.pcap`, 10101004 sends 485
+  such DENMs in sequenceNumbers 40–43 over 139 s (every 0.25–1 s)
+- **timeline slider** (ticks at the start of every sequenceNumber) to move back
+  and forth, **speed slider** (0.1x … 50x); the status line shows the capture
+  time, the current sequenceNumber (and termination), `eventPositionHeading`,
+  `eventSpeed`, the distance to the CAM and the number of trace / pathHistory
+  points shown
+- **CAM matching**: all CAMs of the capture are decoded (ASN.1 in
+  [`../cam/ASN/`](../cam/ASN/)) and the CAM station that matches the DENMs best
+  is selected automatically. Every candidate gets a score out of 100 with the
+  details listed:
 
   | Weight | Criterion | Full points |
   |--------|-----------|-------------|
-  | 40 | trace: median distance between trace points and the CAM position at the same time | ≤ 5 m (none at ≥ 50 m) |
-  | 25 | timing: share of the trace time span covered by CAMs | 100 % |
+  | 40 | track: median distance between the eventPositions and the CAM position at the same time | ≤ 5 m (none at ≥ 50 m) |
+  | 25 | timing: share of the DENM time span covered by CAMs | 100 % |
   | 20 | cause: `incidentIndication` in the CAM special vehicle container | same cause and sub cause (same cause: 80 %, fitting container: 50 %) |
   | 15 | station | same stationId (same stationType: 30 %) |
 
   A candidate is only preselected from 50/100 on; any candidate (or none) can be
-  chosen manually.
-- **Visualize**: three layers that can be shown individually or together, each
-  with the same options:
+  chosen manually. In `TrafficManager.pcap` the CAMs of 10101004 are 1.4 m
+  (median) from its eventPositions: 100/100.
+- **Visualize**: four layers that can be shown individually or together:
 
-  | Layer | Shows | Time label |
-  |-------|-------|------------|
-  | DENM (red) | the replayed trace up to the current position, eventPosition, eventZone (toggle) | `pathDeltaTime` |
-  | CAM (blue) | the received CAM positions of the matched CAM station up to the replay time | time to the previous CAM |
-  | CAM pathHistory (green) | the `pathHistory` of the latest CAM with a low frequency container, from its referencePosition backwards; only the part from the replay start on, so it is empty at the start and builds up during the replay | `pathDeltaTime` |
+  | Layer | Shows | Time label | Extra options |
+  |-------|-------|------------|---------------|
+  | DENM | eventPositions of all DENMs up to the replay time | time to the previous DENM (`seq n` at a new sequenceNumber) | eventZone of the latest DENM (own colour), `eventPositionHeading` arrows |
+  | DENM traces | first trace (`detectionZonesToEventPosition`) of the latest DENM, from its eventPosition backwards | `pathDeltaTime` | – |
+  | CAM | received positions of the matched CAM station | time to the previous CAM | `heading` arrows, smoothing |
+  | CAM pathHistory | `pathHistory` of the latest CAM with a low frequency container, from its referencePosition backwards | `pathDeltaTime` | – |
 
-  Options per layer: **points** (off = line only), **time labels**, **full
-  preview**, **heading** arrows (DENM: `eventPositionHeading` at the
-  eventPosition(s); CAM: `heading` at the CAM points; off by default) (faint dashed line of what the layer shows at the end of the
-  replay) and **minimal view** with a slider for the number of points (1–40):
-  only the current position and the last n points. The minimal
-  DENM view also hides the eventPosition and eventZone; the minimal CAM view
-  places the CAM marker on the latest received CAM instead of interpolating.
-  Every point has a popup with its details.
+  DENM traces and CAM pathHistory show only the part from the replay start on,
+  so they are empty at the start and build up during the replay. Point *i* was
+  passed at the reception time minus the sum of `pathDeltaTime` 1…*i*
+  (`pathDeltaTime` is the time to the previous point, to the eventPosition /
+  referencePosition for the first one).
 
-  Defaults at start: all three layers shown with points, in the minimal view
-  (DENM 8 points, CAM and CAM pathHistory 15 points), no full previews, no CAM smoothing;
-  labels only for the DENM (`pathDeltaTime`); eventZone shown. The **Reset
-  view** button restores these defaults and the replay mode (real time, pause
-  cap 5 s) without changing the selection or the replay position.
+  Options per layer: **colour** (picker), **points** (off = line only), **time
+  labels**, **full preview** (faint dashed line of what the layer shows at the
+  end of the replay) and **minimal view** with a slider for the number of
+  points (1–40): only the current position and the last n points. The minimal
+  DENM view also hides the eventZone; the minimal CAM view without smoothing
+  places the CAM marker on the latest received CAM. Every point has a popup
+  with its details; heading arrows sit just ahead of the point.
+
+  Defaults at start: all four layers shown with points, in the minimal view
+  (DENM and DENM traces 8 points, CAM and CAM pathHistory 15 points), no full
+  previews, no heading arrows, no CAM smoothing; labels only for the DENM traces
+  (`pathDeltaTime`); eventZone shown. The **Reset view** button restores these
+  defaults and colours without changing the selection or the replay time.
 - **CAM smoothing** (CAM option, off by default): the received CAM positions
-  jitter by about 1–1.5 m from CAM to CAM; with smoothing on, the CAM track is smoothed (Kalman filter + RTS smoother,
-  constant velocity model) using the positions, the time between the CAMs and
-  speed/heading; speed/heading only weakly, since the heading is often off at
-  low speed. Between two CAMs the position is interpolated with a cubic curve
-  along the smoothed velocity, so the blue marker moves continuously. The CAM
-  points stay at the received positions (the popup gives the distance to the
-  smoothed one; in `TrafficManager.pcap` 0.5 m median, 2 m max)
-  Without smoothing the received positions are connected by straight lines
-  (minimal view: the marker stays on the latest received CAM). The CAM matching
-  always uses the received positions
+  jitter by about 1–1.5 m from CAM to CAM; with smoothing on, the CAM track is
+  smoothed (Kalman filter + RTS smoother, constant velocity model) using the
+  positions, the time between the CAMs and speed/heading; speed/heading only
+  weakly, since the heading is often off at low speed. Between two CAMs the
+  position is interpolated with a cubic curve along the smoothed velocity, so
+  the CAM marker moves continuously. The CAM points stay at the received
+  positions (the popup gives the distance to the smoothed one; in
+  `TrafficManager.pcap` 0.5 m median, 2 m max). The CAM matching always uses
+  the received positions
 - **pathHistory warning**: while the shown pathHistory is implausible, a red
   banner *CAM pathHistory inconsistent / broken* is shown on the map with the
   CAM and the reason (the pathHistory itself is drawn as received). Checked on
@@ -223,9 +208,7 @@ Common to both views:
 
 ```bash
 python denm_replay.py ../test-data/TrafficManager.pcap
-python denm_replay.py ../test-data/TrafficManager.pcap --station 10101004          # real-time view
-python denm_replay.py ../test-data/TrafficManager.pcap --station 10101004 --seq 42 # trace view
-python denm_replay.py capture.pcap --view trace
+python denm_replay.py ../test-data/TrafficManager.pcap --station 10101004
 python denm_replay.py capture.pcap -o my_replay.html --no-open
 python denm_replay.py capture.pcap --no-cam      # DENM only
 ```

@@ -8,7 +8,7 @@ Applicable base specification:
 
 > **Status:** no standalone CAM tools yet. CAMs are currently decoded by
 > [`../denm/denm_replay.py`](../denm/denm_replay.py), which matches the CAM
-> station that fits a DENM trace best and replays it in parallel with the DENM.
+> station that fits the DENMs of a station best and replays it in parallel with them.
 
 CAMs are sent on BTP-B destination port 2001 with `messageId` 2. Decoding was
 checked with [`../test-data/TrafficManager.pcap`](../test-data/): all 573 CAMs

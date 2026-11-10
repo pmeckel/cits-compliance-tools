@@ -12,8 +12,8 @@ Tools check conformance against:
 | Folder | Message | Use Cases | Spec |
 |--------|---------|-----------|------|
 | [`ivim/`](ivim/) | IVIM | [`ivs-ts/`](ivim/ivs-ts/), [`ng-tsa/`](ivim/ng-tsa/) (implemented), `ivs-ft/` (planned) | C-ROADS Release 3.2.0 |
-| [`denm/`](denm/) | DENM | Basic DENM tooling implemented (counting, zone measurement, KML, trace replay with matching CAM in parallel); use-case compliance checkers (RWW, HLN) *(planned)* | C-ROADS Release 3.2.0 *(planned)* |
-| [`cam/`](cam/) | CAM | ASN.1 for decoding; used by the DENM trace replay, no standalone tools yet | — |
+| [`denm/`](denm/) | DENM | Basic DENM tooling implemented (counting, zone measurement, KML, real-time DENM replay with traces and the matching CAM); use-case compliance checkers (RWW, HLN) *(planned)* | C-ROADS Release 3.2.0 *(planned)* |
+| [`cam/`](cam/) | CAM | ASN.1 for decoding; used by the DENM replay, no standalone tools yet | — |
 
 A single message type can carry multiple C-ROADS use cases (e.g. IVIM carries
 IVS-TS, NG-TSA and IVS-FT). Within each message-type folder, parsing/visualization
