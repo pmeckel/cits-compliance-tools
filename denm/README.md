@@ -141,11 +141,16 @@ connection for the map tiles):
   station clocks can be far off. In `TrafficManager.pcap`, 10101004 sends 485
   such DENMs in sequenceNumbers 40–43 over 139 s (every 0.25–1 s)
 - **static DENMs**: if eventPosition, traces and eventZone are the same in all
-  DENMs of an actionId (typical for roadside units), only its most recent DENM
-  is shown, for the whole replay: eventPosition (DENM layer), all traces (DENM
-  traces layer) and eventZone; the replay itself uses the moving actionIds. In
+  DENMs of an actionId (typical for roadside units), every sequenceNumber is a
+  message of its own: the static messages of the station are listed (event
+  type, number of DENMs, trace and eventZone points) and the selected one is
+  shown with its most recent DENM for the whole replay: eventPosition (DENM
+  layer), all traces (DENM traces layer) and eventZone. The replay itself uses
+  the moving actionIds; a station with only static messages uses the time span
+  of the selected message for the timeline and the CAM matching. In
   `TrafficManager.pcap` all actionIds of the 4 roadSideUnits are static (e.g.
-  1040017: 10 actionIds, 1,288 DENMs)
+  1040017: 10 messages, 1,288 DENMs; for its `stationaryVehicle` message seq 15
+  the CAM of lightTruck 2245840011 stands 6.8 m (median) from the eventPosition)
 - **timeline slider** (ticks at the start of every sequenceNumber) to move back
   and forth, **speed slider** (0.1x … 50x); the status line shows the capture
   time, the current sequenceNumber (and termination), `eventPositionHeading`,

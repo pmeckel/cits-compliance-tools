@@ -13,8 +13,9 @@ Selection:
   - one entry per originatingStationId; every DENM with a new detectionTime
     (first reception, any sequenceNumber) is one step of the replay
   - static actionIds (eventPosition, traces and eventZone the same in all its
-    DENMs, e.g. roadside units): only the most recent DENM is shown, with
-    eventPosition, all traces and eventZone, for the whole replay
+    DENMs, e.g. roadside units): every sequenceNumber is a message of its own,
+    selected from a list; the selected one is shown with its most recent DENM
+    (eventPosition, all traces and eventZone) for the whole replay
 
 Layers (each with colour, points or line only, time labels, full preview and a
 minimal view with only the last n points; shown individually or together):
@@ -500,6 +501,10 @@ HTML_TEMPLATE = r'''<!doctype html>
     <div id="stfilter"></div>
     <h2>originatingStationId</h2>
     <div id="stations"></div>
+    <div id="staticSel" style="display:none">
+      <h2>Static DENM (sequenceNumber)</h2>
+      <div id="staticList"></div>
+    </div>
     <h2>CAM match</h2>
     <div id="cams" class="muted"></div>
     <h2>Visualize</h2>
@@ -670,7 +675,7 @@ function showPhWarning(text) {
 
 // t0abs: capture time (s) of replay time 0 (just before the first DENM of the station).
 // ref: what the CAMs are matched against ({pts: [{lat, lon, t}], t0, t1, cause, stationId, stationTypeNo})
-const st = { station: null, U: [], staticDenms: [], denmPts: [], denmPtsSmooth: [], denmRows: [], t: 0, total: 0, playing: false, speed: 1, last: null,
+const st = { station: null, U: [], staticAll: [], staticSel: null, staticDenms: [], denmPts: [], denmPtsSmooth: [], denmRows: [], t: 0, total: 0, playing: false, speed: 1, last: null,
              t0abs: 0, cam: null, camRank: [], ref: null, ezIdx: null };
 
 // ─── Station selection ─────────────────────────────────────────────────────
@@ -710,22 +715,31 @@ function renderStations() {
 
 // Every new detectionTime of the station (first reception) is one DENM update with its
 // eventPosition, eventPositionHeading, eventSpeed, traces and eventZone.
-function selectStation(s) {
+function selectStation(s, staticSeq = null) {
   pause();
   st.station = s;
   renderStations();
   const A = s.updates;
-  st.t0abs = A[0].rx - 1;
-  st.total = A[A.length - 1].rx + 1 - st.t0abs;
-  st.ezIdx = null;
-  const causes = A.filter(u => u.cause).map(u => u.cause);
-  st.ref = { pts: A.map(u => ({ lat: u.lat, lon: u.lon, t: u.rx })), t0: A[0].rx, t1: A[A.length - 1].rx,
-             cause: causes.length ? causes[causes.length - 1] : null, stationId: s.stationId, stationTypeNo: s.stationTypeNo };
-  // Static actionIds (eventPosition, traces and eventZone never change): only their most recent DENM is
-  // shown, from the start; the replay uses the DENMs of the moving actionIds (st.U)
+  // Static actionIds (eventPosition, traces and eventZone never change): every sequenceNumber is its own
+  // message; the selected one is shown with its most recent DENM for the whole replay. The replay itself
+  // uses the DENMs of the moving actionIds (st.U).
   const stat = new Set(s.staticSeqs);
-  st.staticDenms = s.staticSeqs.map(seq => { const us = A.filter(u => u.seq === seq); return { ...us[us.length - 1], n: us.length }; });
   const U = st.U = A.filter(u => !stat.has(u.seq));
+  st.staticAll = s.staticSeqs.map(seq => {
+    const us = A.filter(u => u.seq === seq);
+    return { ...us[us.length - 1], n: us.length, from: us[0].rx, updates: us };
+  });
+  st.staticSel = stat.has(staticSeq) ? staticSeq : (s.staticSeqs.length ? s.staticSeqs[0] : null);
+  st.staticDenms = st.staticAll.filter(u => u.seq === st.staticSel);
+  renderStaticList();
+  // Time span and CAM matching: all DENMs of the station; only static ones: the selected message
+  const T = U.length || !st.staticDenms.length ? A : st.staticDenms[0].updates;
+  st.t0abs = T[0].rx - 1;
+  st.total = T[T.length - 1].rx + 1 - st.t0abs;
+  st.ezIdx = null;
+  const causes = T.filter(u => u.cause).map(u => u.cause);
+  st.ref = { pts: T.map(u => ({ lat: u.lat, lon: u.lon, t: u.rx })), t0: T[0].rx, t1: T[T.length - 1].rx,
+             cause: causes.length ? causes[causes.length - 1] : null, stationId: s.stationId, stationTypeNo: s.stationTypeNo };
   st.denmRows = U.map(u => [u.rx, u.lat, u.lon, u.spd, u.hdg, null, ...u.s]);
   st.denmPts = U.map((u, i) => {
     const prev = i ? U[i - 1] : null, newSeq = !prev || prev.seq !== u.seq;
@@ -767,16 +781,32 @@ function selectStation(s) {
   $('info').innerHTML = `originatingStationId ${s.stationId}<br>stationType ${s.stationType}<br>
     ${A.length} DENMs with a new detectionTime from ${tStr(A[0].rx)} to ${tStr(A[A.length - 1].rx)} UTC
     (capture clock)<br>` + seqs.map(q => `seq ${q.seq}: ${q.n} DENM(s), ${(q.to - q.from).toFixed(1)} s${q.term ? ', terminated' : ''}` +
-    (stat.has(q.seq) ? ' – static, most recent DENM shown' : '')).join('<br>');
+    (stat.has(q.seq) ? ' – static' : '')).join('<br>');
 
   st.t = 0;
   rankCams();   // selects the CAM, updates the previews and renders
-  const bounds = L.latLngBounds(A.map(u => [u.lat, u.lon]));
+  const bounds = L.latLngBounds([...U, ...st.staticDenms].map(u => [u.lat, u.lon]));
   for (const u of st.staticDenms) {
     u.traces.forEach(tr => tr.forEach(q => bounds.extend([q[0], q[1]])));
     u.ez.forEach(q => bounds.extend(q));
   }
   map.fitBounds(bounds, { padding: [40, 40], maxZoom: 19 });
+}
+
+// List of the static messages (one per sequenceNumber) of the station; one is shown at a time
+function renderStaticList() {
+  const box = $('staticList');
+  box.innerHTML = '';
+  $('staticSel').style.display = st.staticAll.length ? '' : 'none';
+  for (const u of st.staticAll) {
+    const lab = document.createElement('label');
+    lab.className = 'opt';
+    lab.innerHTML = `<input type="radio" name="staticSeq" ${u.seq === st.staticSel ? 'checked' : ''}> <b>seq ${u.seq}</b>
+      <span class="muted">${u.eventType} &middot; ${u.n} DENM(s) &middot; traces ${u.traces.map(t => t.length).join('/') || '-'}
+      &middot; eventZone ${u.ez.length ? u.ez.length + ' pts' : '-'}${u.term ? ' &middot; terminated' : ''}</span>`;
+    lab.querySelector('input').onchange = () => selectStation(st.station, u.seq);
+    box.appendChild(lab);
+  }
 }
 
 function denmPopup(sid, u, prev) {
@@ -1128,7 +1158,7 @@ function render() {
   let txt = `${t.toFixed(1)} / ${st.total.toFixed(1)} s  ·  ${tStr(absT)} UTC  ·  `;
   txt += u ? `DENM ${st.station.stationId}/${u.seq}${u.term ? ' TERMINATED' : ''}, ${(absT - u.rx).toFixed(1)} s ago, ` +
              `heading ${u.hdg ?? 'n/a'}°, ${u.spd ?? 'n/a'} km/h` : U.length ? 'no DENM yet' : 'no moving DENM';
-  if (st.staticDenms.length) txt += `  ·  ${st.staticDenms.length} static DENM(s): most recent shown`;
+  if (st.staticDenms.length) txt += `  ·  static DENM ${st.station.stationId}/${st.staticSel}: most recent of ${st.staticDenms[0].n} shown`;
   if (opts.dtr.show && U.length) {
     const n = dt.pts.filter(p => !p.anchor).length;
     txt += dt.u ? `  ·  trace ${n} of ${dt.u.traces[0].length} pts since replay start` : '  ·  trace: none yet';
