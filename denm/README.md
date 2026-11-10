@@ -146,8 +146,7 @@ needs an internet connection for the map tiles):
 - **replay modes**: real time, real time with compressed pauses (segments longer
   than an adjustable cap are shortened), and point by point (1 s per PathPoint)
 - **timeline slider** (ticks at the PathPoints) to move back and forth and a
-  **speed slider** (0.1x … 50x); the eventZone and a faint preview of the full
-  trace can be toggled
+  **speed slider** (0.1x … 50x)
 - **CAM in parallel**: all CAMs of the capture are decoded (ASN.1 in
   [`../cam/ASN/`](../cam/ASN/)) and the CAM station that matches the selected
   DENM trace best is selected automatically and replayed in parallel (blue),
@@ -164,20 +163,22 @@ needs an internet connection for the map tiles):
 
   A candidate is only preselected from 50/100 on; any candidate (or none) can be
   chosen manually.
-- **CAM pathHistory** (toggle, off by default): shows the `pathHistory` of the
-  latest CAM with a low frequency container received up to the current replay
-  time (bright green; the eventZone is darker green), from the CAM referencePosition backwards; each point has a
-  popup with its `pathDeltaTime`, the end is labeled with the number of points
-  and the time span covered
-- **minimal CAM view** (toggle, off by default): only the position of the
-  latest received CAM (not interpolated) and a line through its 5 most recent
-  `pathHistory` points; the CAM track, the CAM preview and the full pathHistory
-  are hidden while it is on
-- **minimal DENM view** (toggle, off by default): only the current DENM
-  position and a line through the last 5 reached PathPoints; the rest of the
-  trace, the PathPoint markers and labels, the trace preview, the eventZone and
-  the eventPosition marker are hidden while it is on. It can be combined with
-  the minimal CAM view
+- **Visualize**: three layers that can be shown individually or together, each
+  with the same options:
+
+  | Layer | Shows | Time label |
+  |-------|-------|------------|
+  | DENM (red) | the replayed trace up to the current position, eventPosition, eventZone (toggle) | `pathDeltaTime` |
+  | CAM (blue) | the received CAM positions of the matched CAM station up to the replay time | time to the previous CAM |
+  | CAM pathHistory (green) | the `pathHistory` of the latest CAM with a low frequency container, from its referencePosition backwards; only the part from the replay start on, so it is empty at the start and builds up during the replay | `pathDeltaTime` |
+
+  Options per layer: **points** (off = line only), **time labels**, **full
+  preview** (faint dashed line of what the layer shows at the end of the
+  replay) and **minimal view** with a slider for the number of points (1–40,
+  default 5): only the current position and the last n points. The minimal
+  DENM view also hides the eventPosition and eventZone; the minimal CAM view
+  places the CAM marker on the latest received CAM instead of interpolating.
+  Every point has a popup with its details.
 
 ```bash
 python denm_replay.py ../test-data/TrafficManager.pcap

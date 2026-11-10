@@ -31,7 +31,6 @@ Replay:
   - timeline slider to move back and forth, speed slider (0.1x .. 50x)
 
 The trace is drawn on a satellite map (Esri World Imagery, needs internet).
-The eventZone is shown in green, the full trace faintly as a preview.
 
 CAM in parallel (ASN.1 in ../cam/ASN, disable with --no-cam):
   - all CAMs of the capture are decoded; DENM and CAMs are put on the common
@@ -49,13 +48,12 @@ CAM in parallel (ASN.1 in ../cam/ASN, disable with --no-cam):
   - the best candidate is selected automatically if it reaches 50/100; the
     CAM track (blue) and position are replayed in parallel with the DENM,
     with the distance between both shown in the status line
-  - optional (toggle): the pathHistory of the low frequency container of the
-    latest CAM received up to the current replay time (green)
-  - optional (toggle): minimal CAM view - only the latest received CAM position
-    and a line through its 5 most recent pathHistory points
 
-Minimal DENM view (toggle): only the current DENM position and a line through
-the last 5 reached PathPoints; everything else of the DENM is hidden.
+Visualize: three layers (DENM trace, CAM track, CAM pathHistory), shown
+individually or together, each with the options points (off = line only),
+time labels, full preview and a minimal view (only the last n points, slider
+1..40, default 5). The CAM pathHistory is the one of the latest CAM with low
+frequency container, limited to the part from the replay start on.
 
 Reuses PCAP parsing, ASN.1 compilation and DENM extraction from denm_count.py,
 the event type text from denm_common.py and the delta position helper from
@@ -356,6 +354,17 @@ HTML_TEMPLATE = r'''<!doctype html>
   .cam-lbl::before { display:none; }
   .ph-lbl { background:#3f9c0a; color:#fff; border:none; font-size:11px; padding:1px 4px; }
   .ph-lbl::before { display:none; }
+  .campt-lbl { background:#1570ef; color:#fff; border:none; font-size:11px; padding:1px 4px; }
+  .campt-lbl::before { display:none; }
+  .layer { border:1px solid var(--line); border-radius:6px; padding:6px 8px; margin-bottom:6px; }
+  .layer .lhead { display:flex; align-items:center; gap:6px; font-weight:600; cursor:pointer; }
+  .layer .lhead .muted { font-weight:400; margin-left:auto; }
+  .layer .lopts { display:grid; grid-template-columns:1fr 1fr; gap:2px 10px; margin-top:4px; padding-left:22px; font-size:13px; }
+  .layer .lopts label { cursor:pointer; white-space:nowrap; }
+  .layer .minrow { grid-column:1 / -1; display:flex; align-items:center; gap:6px; }
+  .layer .minrow input[type=range] { flex:1; min-width:60px; }
+  .layer .nval { min-width:22px; text-align:right; font-variant-numeric:tabular-nums; }
+  .layer.off .lopts { opacity:.45; }
   .cam { display:block; border:1px solid var(--line); border-radius:6px; padding:6px 8px; margin-bottom:6px;
          cursor:pointer; color:var(--text); }
   .cam .score { float:right; font-weight:600; font-variant-numeric: tabular-nums; }
@@ -383,21 +392,14 @@ HTML_TEMPLATE = r'''<!doctype html>
     <div id="traces"></div>
     <h2>CAM match</h2>
     <div id="cams" class="muted"></div>
-    <label class="opt"><input type="checkbox" id="showCam" checked> show CAM in parallel</label>
-    <label class="opt"><input type="checkbox" id="showCamPreview" checked> full CAM track in the DENM time window</label>
-    <label class="opt"><input type="checkbox" id="showCamPath"> CAM pathHistory (latest low frequency container)</label>
-    <label class="opt"><input type="checkbox" id="camMinimal"> minimal CAM view: latest CAM position and its last 5 pathHistory points only</label>
+    <h2>Visualize</h2>
+    <div id="layercards"></div>
     <h2>Replay mode</h2>
     <label class="opt"><input type="radio" name="mode" value="real" checked> Real time (pathDeltaTime)</label>
     <label class="opt"><input type="radio" name="mode" value="compress"> Real time, compress pauses</label>
     <div class="row" style="padding-left:22px"><span class="muted">cap per segment (s)</span>
       <input type="number" id="cap" value="5" min="0.1" step="0.5" style="width:70px"></div>
     <label class="opt"><input type="radio" name="mode" value="points"> Point by point (1 s per point at 1x)</label>
-    <h2>Display</h2>
-    <label class="opt"><input type="checkbox" id="showLabels" checked> pathDeltaTime labels</label>
-    <label class="opt"><input type="checkbox" id="showPreview" checked> full trace preview</label>
-    <label class="opt"><input type="checkbox" id="showEz" checked> eventZone</label>
-    <label class="opt"><input type="checkbox" id="denmMinimal"> minimal DENM view: current DENM position and the last 5 reached PathPoints only</label>
     <h2>Info</h2>
     <div id="info" class="muted"></div>
   </div>
@@ -431,19 +433,83 @@ L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/
 }).addTo(map);
 map.setView([50, 10], 5);
 
-const layers = { preview: L.layerGroup().addTo(map), ez: L.layerGroup().addTo(map),
-                 points: L.layerGroup().addTo(map), static: L.layerGroup().addTo(map) };
-let drawn = L.polyline([], { color: '#ff3b30', weight: 4 }).addTo(map);
-let mover = L.circleMarker([0, 0], { radius: 7, color: '#fff', weight: 2, fillColor: '#ff3b30', fillOpacity: 1 });
-
-const camLayers = { preview: L.layerGroup().addTo(map), path: L.layerGroup().addTo(map) };
-let camPathShown = null;   // pathHistory entry currently drawn
-const camDrawn = L.polyline([], { color: '#2e90fa', weight: 4 }).addTo(map);
+// Previews below the replayed tracks
+map.createPane('previewPane').style.zIndex = 390;
+const layers = { ez: L.layerGroup().addTo(map), static: L.layerGroup().addTo(map) };
+const mover = L.circleMarker([0, 0], { radius: 7, color: '#fff', weight: 2, fillColor: '#ff3b30', fillOpacity: 1 });
 const camMover = L.circleMarker([0, 0], { radius: 7, color: '#fff', weight: 2, fillColor: '#1570ef', fillOpacity: 1 })
   .bindTooltip('', { permanent: true, direction: 'left', className: 'cam-lbl', offset: [-8, 0] });
 
+// ─── Visualized layers: DENM trace, CAM track, CAM pathHistory ─────────────
+// Every layer has the same options: show, points (off = line only), time labels,
+// full preview, minimal view (only the last n points).
+const LAYERS = {
+  denm: { title: 'DENM', sub: 'trace PathPoints', color: '#ff3b30', fill: '#ffb020', preview: '#ffffff',
+          lblClass: 'lbl', lblText: 'pathDeltaTime',
+          def: { show: true, points: true, labels: true, preview: true, minimal: false, n: 5, ez: true } },
+  cam:  { title: 'CAM', sub: 'positions of the matched CAM station', color: '#2e90fa', fill: '#84caff', preview: '#84caff',
+          lblClass: 'campt-lbl', lblText: 'time to prev. CAM',
+          def: { show: true, points: false, labels: false, preview: true, minimal: false, n: 5 } },
+  ph:   { title: 'CAM pathHistory', sub: 'from replay start', color: '#7cfc00', fill: '#3f9c0a', preview: '#c5f6a0',
+          lblClass: 'ph-lbl', lblText: 'pathDeltaTime',
+          def: { show: true, points: true, labels: false, preview: false, minimal: false, n: 5 } },
+};
+const MINIMAL_MAX = 40;
+const opts = Object.fromEntries(Object.entries(LAYERS).map(([k, d]) => [k, { ...d.def }]));
+
+class Track {
+  constructor(d) {
+    this.d = d;
+    this.group = L.layerGroup().addTo(map);
+    this.previewGroup = L.layerGroup().addTo(map);
+    this.line = L.polyline([], { color: d.color, weight: 4 }).addTo(this.group);
+    this.markers = new Map();
+  }
+  reset() {
+    for (const m of this.markers.values()) this.group.removeLayer(m);
+    this.markers.clear();
+  }
+  // pts: chronological [{id, lat, lon, lbl, popup, anchor}], head: {lat, lon} | null.
+  // Anchors (eventPosition, CAM referencePosition) are part of the line but get no marker
+  // and are not counted in the minimal view.
+  update(pts, head, o) {
+    let vis = pts;
+    if (o.minimal) {
+      let c = 0, i = pts.length;
+      while (i > 0 && (pts[i - 1].anchor || c < o.n)) { if (!pts[i - 1].anchor) c++; i--; }
+      vis = pts.slice(i);
+    }
+    this.line.setLatLngs([...vis.map(p => [p.lat, p.lon]), ...(head ? [[head.lat, head.lon]] : [])]);
+    const want = new Set((o.points || o.labels) ? vis.filter(p => !p.anchor).map(p => p.id) : []);
+    for (const [id, m] of this.markers) if (!want.has(id)) { this.group.removeLayer(m); this.markers.delete(id); }
+    for (const p of vis) {
+      if (!want.has(p.id) || this.markers.has(p.id)) continue;
+      const m = o.points
+        ? L.circleMarker([p.lat, p.lon], { radius: 4.5, color: '#fff', weight: 1.5, fillColor: this.d.fill, fillOpacity: 1 })
+        : L.circleMarker([p.lat, p.lon], { radius: 2, stroke: false, fillOpacity: 0 });
+      if (p.popup) m.bindPopup(p.popup);
+      if (o.labels && p.lbl) m.bindTooltip(p.lbl, { permanent: true, direction: 'right', className: this.d.lblClass, offset: [6, 0] });
+      this.group.addLayer(m);
+      this.markers.set(p.id, m);
+    }
+  }
+  setPreview(latlngs) {
+    this.previewGroup.clearLayers();
+    if (latlngs.length > 1) {
+      L.polyline(latlngs, { color: this.d.preview, weight: 2, opacity: .7, dashArray: '4 6', pane: 'previewPane' })
+        .addTo(this.previewGroup);
+    }
+  }
+}
+const tracks = Object.fromEntries(Object.entries(LAYERS).map(([k, d]) => [k, new Track(d)]));
+
+function setMover(m, pos) {
+  if (pos) { m.setLatLng([pos.lat, pos.lon]); if (!map.hasLayer(m)) m.addTo(map); }
+  else if (map.hasLayer(m)) map.removeLayer(m);
+}
+
 // t0abs: reception time (s) of the last trace point, so that the eventPosition is at the DENM reception time
-const st = { station: null, entry: null, traceIdx: 0, seqPts: [], T: [], realT: [], markers: [],
+const st = { station: null, entry: null, traceIdx: 0, seqPts: [], denmPts: [], T: [], realT: [],
              t: 0, total: 0, playing: false, speed: 1, last: null, t0abs: 0, cam: null, camRank: [] };
 
 const $ = id => document.getElementById(id);
@@ -570,10 +636,8 @@ function build() {
   st.seqPts = seq; st.T = T; st.realT = realT; st.total = T[T.length - 1];
   st.t0abs = e.rx - realT[realT.length - 1];
 
-  // Static layers
-  layers.preview.clearLayers(); layers.ez.clearLayers(); layers.points.clearLayers(); layers.static.clearLayers();
-  L.polyline(seq.map(p => [p.lat, p.lon]), { color: '#ffffff', weight: 2, opacity: .6, dashArray: '4 6' })
-    .addTo(layers.preview);
+  // Static layers (shown with the DENM, hidden in its minimal view)
+  layers.ez.clearLayers(); layers.static.clearLayers();
   if (e.eventZone.length) {
     L.polyline([[ep.lat, ep.lon], ...e.eventZone.map(p => [p.lat, p.lon])],
                { color: '#12b76a', weight: 4, opacity: .85 }).addTo(layers.ez);
@@ -582,14 +646,12 @@ function build() {
     .bindTooltip(`${e.stationId}/${e.seq} | ${e.eventType}`, { permanent: true, direction: 'top', className: 'ep-lbl', offset: [0, -8] })
     .addTo(layers.static);
 
-  st.markers = seq.map((p, k) => {
-    if (p.isEp) return null;
-    const label = p.dt ? `${(p.dt / 100).toFixed(2)} s` : 'n/a';
-    return L.circleMarker([p.lat, p.lon], { radius: 5, color: '#fff', weight: 1.5, fillColor: '#ffb020', fillOpacity: 1 })
-      .bindTooltip(label, { permanent: true, direction: 'right', className: 'lbl', offset: [6, 0] })
-      .bindPopup(`<b>${p.name}</b><br>pathDeltaTime: ${p.dt ?? 'n/a'}${p.dt ? ` (${(p.dt / 100).toFixed(2)} s)` : ' (estimated)'}<br>
-                  to next point: ${p.dist.toFixed(1)} m${p.dt ? `, ${(p.dist / (p.dt / 100) * 3.6).toFixed(1)} km/h` : ''}`);
-  });
+  st.denmPts = seq.map((p, k) => p.isEp
+    ? { id: k, lat: p.lat, lon: p.lon, anchor: true }
+    : { id: k, lat: p.lat, lon: p.lon, lbl: p.dt ? `${(p.dt / 100).toFixed(2)} s` : 'n/a',
+        popup: `<b>${p.name}</b><br>pathDeltaTime: ${p.dt ?? 'n/a'}${p.dt ? ` (${(p.dt / 100).toFixed(2)} s)` : ' (estimated)'}<br>
+                to next point: ${p.dist.toFixed(1)} m${p.dt ? `, ${(p.dist / (p.dt / 100) * 3.6).toFixed(1)} km/h` : ''}` });
+  Object.values(tracks).forEach(tr => tr.reset());
 
   // Ticks
   const ticks = $('ticks');
@@ -609,6 +671,7 @@ function build() {
     DENM received ${new Date(e.rx * 1000).toISOString().replace('T', ' ').slice(0, 23)} UTC
     (capture clock; the eventPosition is placed at this time)`;
 
+  updatePreviews();
   applyDisplay();
   st.t = 0;
   render();
@@ -720,126 +783,96 @@ function rankCams() {
 
 function selectCam(r) {
   st.cam = r;
-  camLayers.preview.clearLayers();
-  camLayers.path.clearLayers(); camPathShown = null;
   if (r) {
-    L.polyline(r.win.map(p => [p[1], p[2]]), { color: '#84caff', weight: 2, opacity: .8, dashArray: '2 6' })
-      .addTo(camLayers.preview);
+    // CAM points of the time window with the time to the previous CAM of the station
+    const P = r.c.positions, i0 = P.indexOf(r.win[0]);
+    r.rows = r.win.map((row, i) => {
+      const prev = P[i0 + i - 1];
+      const dt = prev ? row[0] - prev[0] : null;
+      return { id: row[0], lat: row[1], lon: row[2], row,
+               lbl: dt !== null ? `${dt.toFixed(2)} s` : 'n/a',
+               popup: `<b>CAM ${r.c.stationId}</b><br>received ${new Date(row[0] * 1000).toISOString().slice(11, 23)} UTC` +
+                      `<br>time to previous CAM: ${dt !== null ? dt.toFixed(3) + ' s' : 'n/a'}` +
+                      `<br>speed ${row[3] ?? 'n/a'} km/h, heading ${row[4] ?? 'n/a'}°` };
+    });
   }
+  tracks.cam.reset(); tracks.ph.reset();
+  updatePreviews();
   applyDisplay();
   render();
 }
 
-// pathHistory of the latest CAM with low frequency container received up to absT.
-// Entries: [rx, referencePosition lat, lon, [[lat, lon, pathDeltaTime], ...]].
-// pathDeltaTime (10 ms) is the time to the previous point (the referencePosition for the first one).
-function renderCamPath(absT) {
-  const r = st.cam;
-  const paths = r && $('showCam').checked && $('showCamPath').checked ? (r.c.paths || []) : [];
-  let lo = -1, hi = paths.length;
-  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (paths[m][0] <= absT) lo = m; else hi = m; }
-  const ph = lo >= 0 ? paths[lo] : null;
-  if (ph !== camPathShown) {
-    camPathShown = ph;
-    camLayers.path.clearLayers();
-    if (ph) {
-      const pts = [[ph[1], ph[2]], ...ph[3].map(p => [p[0], p[1]])];
-      L.polyline(pts, { color: '#7cfc00', weight: 3, opacity: .95 }).addTo(camLayers.path);
-      let acc = 0;
-      ph[3].forEach((p, i) => {
-        if (p[2] !== null) acc += p[2] / 100;
-        L.circleMarker([p[0], p[1]], { radius: 4, color: '#fff', weight: 1, fillColor: '#3f9c0a', fillOpacity: 1 })
-          .bindPopup(`<b>CAM ${r.c.stationId} pathHistory point ${i + 1}</b><br>pathDeltaTime: ${p[2] ?? 'n/a'}` +
-                     (p[2] !== null ? ` (${(p[2] / 100).toFixed(2)} s)` : '') +
-                     `<br>${acc.toFixed(2)} s before the CAM`)
-          .addTo(camLayers.path);
-      });
-      if (ph[3].length) {
-        const lastP = ph[3][ph[3].length - 1];
-        L.circleMarker([lastP[0], lastP[1]], { radius: 0, opacity: 0 })
-          .bindTooltip(`pathHistory ${ph[3].length} pts, ${acc.toFixed(1)} s`,
-                       { permanent: true, direction: 'right', className: 'ph-lbl', offset: [6, 0] })
-          .addTo(camLayers.path);
-      }
-    }
-  }
-  return ph ? `  ·  pathHistory ${ph[3].length} pts from CAM ${(absT - ph[0]).toFixed(1)} s ago` : '';
-}
-
-const lastIdx = (rows, t) => {   // index of the last row with rows[i][0] <= t, -1 if none
-  let lo = -1, hi = rows.length;
-  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (rows[m][0] <= t) lo = m; else hi = m; }
+const lastIdx = (arr, t, get = x => x[0]) => {   // index of the last element with time <= t, -1 if none
+  let lo = -1, hi = arr.length;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (get(arr[m]) <= t) lo = m; else hi = m; }
   return lo;
 };
-const CAM_MINIMAL_POINTS = 5;
-const camMinLine = L.polyline([], { color: '#7cfc00', weight: 3, opacity: .95 });
 
-// Minimal CAM view: marker at the position of the latest received CAM (no interpolation)
-// and a line through the CAM_MINIMAL_POINTS most recent pathHistory points of the latest
-// CAM with low frequency container; nothing else of the CAM is drawn.
-function renderCamMinimal(r, absT, denmPos) {
-  const i = lastIdx(r.c.positions, absT);
-  if (i < 0) {
-    camMinLine.setLatLngs([]);
-    if (map.hasLayer(camMover)) map.removeLayer(camMover);
-    return `  ·  CAM ${r.c.stationId}: no CAM received yet`;
-  }
-  const row = r.c.positions[i];
-  const pts = [[row[1], row[2]]];
+// pathHistory of the latest CAM with low frequency container received up to absT, only the
+// part from the replay start (st.t0abs) on. Path entries: [rx, referencePosition lat, lon,
+// [[lat, lon, pathDeltaTime], ...]]; pathDeltaTime (10 ms) is the time to the previous point
+// (the referencePosition for the first one), so point i was passed at rx - sum(pathDeltaTime 1..i).
+function phPoints(r, absT) {
   const paths = r.c.paths || [];
   const j = lastIdx(paths, absT);
-  let n = 0;
-  if (j >= 0) {
-    const ph = paths[j];
-    if (ph[0] !== row[0]) pts.push([ph[1], ph[2]]);   // referencePosition of that older CAM
-    const recent = ph[3].slice(0, CAM_MINIMAL_POINTS);
-    n = recent.length;
-    recent.forEach(p => pts.push([p[0], p[1]]));
-  }
-  camMinLine.setLatLngs(pts);
-  if (!map.hasLayer(camMinLine)) camMinLine.addTo(map);
-  camMover.setLatLng([row[1], row[2]]);
-  if (!map.hasLayer(camMover)) camMover.addTo(map);
-  const spd = row[3] !== null ? `${row[3].toFixed(0)} km/h` : '';
-  camMover.setTooltipContent(`CAM ${r.c.stationId} ${spd}`);
-  return `  ·  latest CAM ${r.c.stationId} ${(absT - row[0]).toFixed(1)} s ago, ` +
-    `${haversine({ lat: row[1], lon: row[2] }, denmPos).toFixed(1)} m from DENM position` +
-    `${spd ? ', ' + spd : ''}  ·  ${n} pathHistory point(s)`;
+  if (j < 0) return { pts: [], ph: null };
+  const ph = paths[j], out = [];
+  let acc = 0;
+  ph[3].forEach((p, i) => {
+    if (p[2] !== null) acc += p[2] / 100;
+    if (ph[0] - acc < st.t0abs) return;
+    out.push({ id: `${ph[0]}:${i}`, lat: p[0], lon: p[1],
+               lbl: p[2] !== null ? `${(p[2] / 100).toFixed(2)} s` : 'n/a',
+               popup: `<b>CAM ${r.c.stationId} pathHistory point ${i + 1}</b><br>pathDeltaTime: ${p[2] ?? 'n/a'}` +
+                      (p[2] !== null ? ` (${(p[2] / 100).toFixed(2)} s)` : '') + `<br>${acc.toFixed(2)} s before the CAM` });
+  });
+  out.reverse();
+  if (ph[0] >= st.t0abs) out.push({ id: `${ph[0]}:ref`, lat: ph[1], lon: ph[2], anchor: true });
+  return { pts: out, ph };
+}
+
+// Full previews = what each layer shows at the end of the replay
+function updatePreviews() {
+  const r = st.cam;
+  tracks.denm.setPreview(st.seqPts.map(p => [p.lat, p.lon]));
+  tracks.cam.setPreview(r ? r.win.map(p => [p[1], p[2]]) : []);
+  tracks.ph.setPreview(r && st.entry ? phPoints(r, st.entry.rx).pts.map(p => [p.lat, p.lon]) : []);
 }
 
 function renderCam(absT, denmPos) {
-  const r = st.cam, show = r && $('showCam').checked;
-  const minimal = show && $('camMinimal').checked;
-  if (!minimal && map.hasLayer(camMinLine)) map.removeLayer(camMinLine);
-  if (minimal) {
-    renderCamPath(-Infinity);   // clears the full pathHistory
-    camDrawn.setLatLngs([]);
-    return renderCamMinimal(r, absT, denmPos);
-  }
-  const phTxt = renderCamPath(absT);
-  if (!show) {
-    camDrawn.setLatLngs([]);
-    if (map.hasLayer(camMover)) map.removeLayer(camMover);
+  const r = st.cam, oc = opts.cam, op = opts.ph;
+  if (!r) {
+    tracks.cam.update([], null, oc); tracks.ph.update([], null, op);
+    setMover(camMover, null);
     return '';
   }
-  const past = r.win.filter(p => p[0] <= absT).map(p => [p[1], p[2]]);
+  let txt = '';
+  // CAM track: received CAMs up to absT; head = interpolated position (minimal view: latest received CAM)
+  const pts = r.rows.slice(0, lastIdx(r.rows, absT, x => x.id) + 1);
   const q = camPosAt(r.c, absT);
-  if (q) past.push([q.lat, q.lon]);
-  camDrawn.setLatLngs(past);
-  if (!q) {
-    if (map.hasLayer(camMover)) map.removeLayer(camMover);
-    return `  ·  CAM ${r.c.stationId}: no CAM at this time` + phTxt;
+  tracks.cam.update(pts, oc.minimal ? null : q, oc);
+  const latest = pts.length ? pts[pts.length - 1] : null;
+  const cpos = oc.minimal ? latest : q;
+  setMover(camMover, oc.show ? cpos : null);
+  if (oc.show) {
+    if (cpos) {
+      const row = oc.minimal ? latest.row : q.row;
+      const spd = row[3] !== null ? `${row[3].toFixed(0)} km/h` : '';
+      camMover.setTooltipContent(`CAM ${r.c.stationId} ${spd}`);
+      txt += `  ·  CAM ${r.c.stationId} ${haversine(cpos, denmPos).toFixed(1)} m from DENM position${spd ? ', ' + spd : ''}`;
+    } else txt += `  ·  CAM ${r.c.stationId}: no CAM at this time`;
   }
-  camMover.setLatLng([q.lat, q.lon]);
-  if (!map.hasLayer(camMover)) camMover.addTo(map);
-  const spd = q.row[3] !== null ? `${q.row[3].toFixed(0)} km/h` : '';
-  camMover.setTooltipContent(`CAM ${r.c.stationId} ${spd}`);
-  return `  ·  CAM ${r.c.stationId} ${haversine(q, denmPos).toFixed(1)} m from DENM position${spd ? ', ' + spd : ''}` + phTxt;
+  // pathHistory
+  const php = phPoints(r, absT);
+  tracks.ph.update(php.pts, null, op);
+  if (op.show) {
+    const n = php.pts.filter(p => !p.anchor).length;
+    txt += php.ph ? `  ·  pathHistory ${n} of ${php.ph[3].length} pts since replay start` : '  ·  pathHistory: none yet';
+  }
+  return txt;
 }
 
 // ─── Rendering at replay time t ────────────────────────────────────────────
-const DENM_MINIMAL_POINTS = 5;
-
 function render() {
   const { seqPts: P, T } = st;
   if (!P.length) return;
@@ -852,19 +885,8 @@ function render() {
   const pos = done ? b : { lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f };
   const reached = done ? P.length - 1 : k;
 
-  // Minimal DENM view: only the last DENM_MINIMAL_POINTS reached PathPoints as a line
-  const dMin = $('denmMinimal').checked;
-  const from = dMin ? Math.max(0, reached - DENM_MINIMAL_POINTS + 1) : 0;
-  drawn.setLatLngs([...P.slice(from, reached + 1).map(p => [p.lat, p.lon]), [pos.lat, pos.lon]]);
-  mover.setLatLng([pos.lat, pos.lon]);
-  if (!map.hasLayer(mover)) mover.addTo(map);
-
-  st.markers.forEach((mk, i) => {
-    if (!mk) return;
-    const show = i <= reached && !dMin;
-    if (show && !layers.points.hasLayer(mk)) layers.points.addLayer(mk);
-    if (!show && layers.points.hasLayer(mk)) layers.points.removeLayer(mk);
-  });
+  tracks.denm.update(st.denmPts.slice(0, reached + 1), done ? null : pos, opts.denm);
+  setMover(mover, opts.denm.show ? pos : null);
 
   const realNow = st.realT[k] + (st.realT[Math.min(k + 1, st.realT.length - 1)] - st.realT[k]) * (done ? 1 : f);
   $('timeline').value = st.total ? Math.round(t / st.total * 10000) : 0;
@@ -874,15 +896,46 @@ function render() {
 }
 
 function applyDisplay() {
-  const lbl = $('showLabels').checked;
-  st.markers.forEach(mk => mk && (lbl ? mk.openTooltip() : mk.closeTooltip()));
-  document.querySelectorAll('.lbl').forEach(el => el.style.display = lbl ? '' : 'none');
-  const dMin = $('denmMinimal').checked;   // minimal DENM view hides everything else of the DENM
-  $('showPreview').checked && !dMin ? layers.preview.addTo(map) : map.removeLayer(layers.preview);
-  $('showEz').checked && !dMin ? layers.ez.addTo(map) : map.removeLayer(layers.ez);
-  !dMin ? layers.static.addTo(map) : map.removeLayer(layers.static);
-  $('showCam').checked && $('showCamPreview').checked && !$('camMinimal').checked
-    ? camLayers.preview.addTo(map) : map.removeLayer(camLayers.preview);
+  for (const [k, tr] of Object.entries(tracks)) {
+    const o = opts[k];
+    o.show ? tr.group.addTo(map) : map.removeLayer(tr.group);
+    o.show && o.preview ? tr.previewGroup.addTo(map) : map.removeLayer(tr.previewGroup);
+  }
+  const d = opts.denm, full = d.show && !d.minimal;   // minimal DENM view: no eventPosition / eventZone
+  full ? layers.static.addTo(map) : map.removeLayer(layers.static);
+  full && d.ez ? layers.ez.addTo(map) : map.removeLayer(layers.ez);
+  document.querySelectorAll('.layer').forEach(el => el.classList.toggle('off', !opts[el.dataset.layer].show));
+}
+
+// ─── Layer option cards ────────────────────────────────────────────────────
+function renderLayerCards() {
+  const box = $('layercards');
+  for (const [k, d] of Object.entries(LAYERS)) {
+    const o = opts[k], div = document.createElement('div');
+    div.className = 'layer';
+    div.dataset.layer = k;
+    const cb = (opt, text) => `<label><input type="checkbox" data-opt="${opt}" ${o[opt] ? 'checked' : ''}> ${text}</label>`;
+    div.innerHTML = `
+      <label class="lhead"><input type="checkbox" data-opt="show" ${o.show ? 'checked' : ''}>
+        <span class="swatch" style="background:${d.color}"></span>${d.title}<span class="muted">${d.sub}</span></label>
+      <div class="lopts">
+        ${cb('points', 'points')}${cb('labels', d.lblText)}
+        ${cb('preview', 'full preview')}${k === 'denm' ? cb('ez', 'eventZone') : '<span></span>'}
+        <div class="minrow">${cb('minimal', 'minimal: last')}
+          <input type="range" data-opt="n" min="1" max="${MINIMAL_MAX}" value="${o.n}" ${o.minimal ? '' : 'disabled'}>
+          <span class="nval">${o.n}</span> points</div>
+      </div>`;
+    div.querySelectorAll('input').forEach(inp => inp.oninput = () => {
+      const opt = inp.dataset.opt;
+      if (opt === 'n') { o.n = +inp.value; div.querySelector('.nval').textContent = o.n; }
+      else o[opt] = inp.checked;
+      if (opt === 'minimal') div.querySelector('input[data-opt=n]').disabled = !o.minimal;
+      if (opt === 'points' || opt === 'labels') tracks[k].reset();
+      applyDisplay();
+      render();
+    });
+    box.appendChild(div);
+  }
 }
 
 // ─── Playback ──────────────────────────────────────────────────────────────
@@ -914,13 +967,7 @@ document.querySelectorAll('input[name=mode]').forEach(r => r.onchange = () => {
   build(); st.t = frac * st.total; render();
 });
 $('cap').onchange = () => { if (mode() === 'compress') { const frac = st.t / st.total; build(); st.t = frac * st.total; render(); } };
-['showLabels', 'showPreview', 'showEz', 'showCamPreview'].forEach(id => $(id).onchange = applyDisplay);
-$('showCam').onchange = () => { applyDisplay(); render(); };
-$('showCamPath').onchange = () => render();
-$('camMinimal').onchange = () => { applyDisplay(); render(); };
-$('denmMinimal').onchange = () => { applyDisplay(); render(); };
-layers.points.on('layeradd', ev => { if (!$('showLabels').checked) ev.layer.closeTooltip(); });
-
+renderLayerCards();
 renderFilter();
 renderStations();
 const pre = DATA.preselect && DATA.stations.find(s => s.stationId === DATA.preselect.station);
