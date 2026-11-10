@@ -125,11 +125,27 @@ python denm_to_kml.py capture.pcap --kmz -o output
 
 ---
 
-### `denm_replay.py` — Trace replay on a satellite map
+### `denm_replay.py` — DENM / CAM replay on a satellite map
 
 Writes a self-contained HTML page (`denm_replay.html`, opened in the browser)
-that replays a DENM trace on a satellite map (Leaflet + Esri World Imagery;
-needs an internet connection for the map tiles):
+that replays DENMs, together with the matching CAMs, on a satellite map
+(Leaflet + Esri World Imagery; needs an internet connection for the map tiles).
+Two views:
+
+- **All DENMs of the station in real time** (default): only the
+  originatingStationId is selected. Every new DENM of the station (first
+  reception of a new `detectionTime`, any sequenceNumber) is shown on the
+  capture clock: its eventPosition (track of all eventPositions, labeled with
+  the time to the previous DENM, or `seq n` at a new sequenceNumber), the trace
+  and eventZone of the current DENM, and in the status line sequenceNumber,
+  termination, `eventPositionHeading` and `eventSpeed`. The timeline has a tick
+  at the start of every sequenceNumber. The CAMs are matched against the
+  eventPositions at their reception times (in `TrafficManager.pcap`, 10101004:
+  485 DENM updates in sequenceNumbers 40–43, CAM of the same station 1.4 m
+  median from the eventPositions)
+- **Trace replay of a single DENM**: as described below
+
+Common to both views:
 
 - **stationType filter**: checkboxes for all stationTypes in the capture; all
   are selected by default except `roadSideUnit(15)`
@@ -173,7 +189,8 @@ needs an internet connection for the map tiles):
   | CAM pathHistory (green) | the `pathHistory` of the latest CAM with a low frequency container, from its referencePosition backwards; only the part from the replay start on, so it is empty at the start and builds up during the replay | `pathDeltaTime` |
 
   Options per layer: **points** (off = line only), **time labels**, **full
-  preview** (faint dashed line of what the layer shows at the end of the
+  preview**, **heading** arrows (DENM: `eventPositionHeading` at the
+  eventPosition(s); CAM: `heading` at the CAM points; off by default) (faint dashed line of what the layer shows at the end of the
   replay) and **minimal view** with a slider for the number of points (1–40):
   only the current position and the last n points. The minimal
   DENM view also hides the eventPosition and eventZone; the minimal CAM view
@@ -181,10 +198,21 @@ needs an internet connection for the map tiles):
   Every point has a popup with its details.
 
   Defaults at start: all three layers shown with points, in the minimal view
-  (DENM 8 points, CAM and CAM pathHistory 15 points), no full previews;
+  (DENM 8 points, CAM and CAM pathHistory 15 points), no full previews, no CAM smoothing;
   labels only for the DENM (`pathDeltaTime`); eventZone shown. The **Reset
   view** button restores these defaults and the replay mode (real time, pause
   cap 5 s) without changing the selection or the replay position.
+- **CAM smoothing** (CAM option, off by default): the received CAM positions
+  jitter by about 1–1.5 m from CAM to CAM; with smoothing on, the CAM track is smoothed (Kalman filter + RTS smoother,
+  constant velocity model) using the positions, the time between the CAMs and
+  speed/heading; speed/heading only weakly, since the heading is often off at
+  low speed. Between two CAMs the position is interpolated with a cubic curve
+  along the smoothed velocity, so the blue marker moves continuously. The CAM
+  points stay at the received positions (the popup gives the distance to the
+  smoothed one; in `TrafficManager.pcap` 0.5 m median, 2 m max)
+  Without smoothing the received positions are connected by straight lines
+  (minimal view: the marker stays on the latest received CAM). The CAM matching
+  always uses the received positions
 - **pathHistory warning**: while the shown pathHistory is implausible, a red
   banner *CAM pathHistory inconsistent / broken* is shown on the map with the
   CAM and the reason (the pathHistory itself is drawn as received). Checked on
@@ -195,7 +223,9 @@ needs an internet connection for the map tiles):
 
 ```bash
 python denm_replay.py ../test-data/TrafficManager.pcap
-python denm_replay.py ../test-data/TrafficManager.pcap --station 10101004 --seq 42
+python denm_replay.py ../test-data/TrafficManager.pcap --station 10101004          # real-time view
+python denm_replay.py ../test-data/TrafficManager.pcap --station 10101004 --seq 42 # trace view
+python denm_replay.py capture.pcap --view trace
 python denm_replay.py capture.pcap -o my_replay.html --no-open
 python denm_replay.py capture.pcap --no-cam      # DENM only
 ```

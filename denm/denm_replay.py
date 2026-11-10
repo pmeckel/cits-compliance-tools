@@ -3,9 +3,15 @@
 DENM Trace Replay
 
 Reads one or more PCAP files, decodes all DENMs and writes a self-contained
-HTML page (Leaflet + Esri World Imagery satellite map, online) that replays a
-DENM trace (location.detectionZonesToEventPosition) from its last PathPoint
-towards the eventPosition.
+HTML page (Leaflet + Esri World Imagery satellite map, online) with two views:
+
+  - all DENMs of a station in real time (default): every new DENM (first
+    reception of a new detectionTime, any sequenceNumber) on the capture clock
+    with its eventPosition, eventPositionHeading, eventSpeed, trace and eventZone
+  - trace replay of a single DENM: the trace (location.detectionZonesToEventPosition)
+    from its last PathPoint towards the eventPosition (described below)
+
+Heading arrows (option): DENM eventPositionHeading, CAM heading.
 
 Selection:
   - stationType filter: checkboxes for all stationTypes found in the capture;
@@ -54,6 +60,9 @@ individually or together, each with the options points (off = line only),
 time labels, full preview and a minimal view (only the last n points, slider
 1..40). The CAM pathHistory is the one of the latest CAM with low
 frequency container, limited to the part from the replay start on.
+Optional (CAM option, off by default): the CAM track is smoothed (Kalman filter + RTS smoother on position, time and,
+weakly, speed/heading) and interpolated between CAMs with a cubic curve along the
+smoothed velocity; the CAM points stay at the received positions.
 A warning banner "CAM pathHistory inconsistent / broken" is shown while the
 received pathHistory has a point with pathDeltaTime 0 or a step of more than
 50 m at more than 250 km/h; the pathHistory is still drawn as received.
@@ -64,12 +73,14 @@ denm_to_kml.py.
 
 Usage:
     python denm_replay.py TrafficManager.pcap
+    python denm_replay.py TrafficManager.pcap --station 10101004 --seq 42 --view trace
     python denm_replay.py ../test-data/DENM*.pcap -o replay.html
     python denm_replay.py capture.pcap --no-open
 """
 
 import argparse
 import json
+import math
 import re
 import sys
 import webbrowser
@@ -83,6 +94,7 @@ from denm_to_kml import COORD_SCALE, cumulative_points
 from ivim_zone_count import iter_its_packets_ts
 
 RSU_STATION_TYPE = 15   # roadSideUnit, deselected by default in the stationType filter
+WGS84_ANGLE_UNAVAILABLE = 3601   # Wgs84AngleValue, unit 0.1 degree
 
 # CAM decoding (ETSI EN 302 637-2, CAM release 2, ASN.1 in ../cam/ASN)
 DEFAULT_CAM_ASN_DIR = Path(__file__).parent.parent / 'cam' / 'ASN'
@@ -101,6 +113,87 @@ def load_station_type_names(asn_dir: Path) -> dict:
     text = (Path(asn_dir) / CDD_FILE).read_text(encoding='utf-8', errors='replace')
     m = _STATION_TYPE_RE.search(text)
     return {int(n): name for name, n in _NAMED_RE.findall(m.group(1))} if m else {}
+
+
+# CAM track smoothing (Kalman filter + Rauch-Tung-Striebel smoother, constant velocity model).
+# The received referencePositions jitter by about 1-1.5 m between CAMs; the reported heading is
+# often off (e.g. at low speed), so speed/heading only weakly support the positions.
+CAM_MAX_GAP = 3.0             # s; the track is split (and not interpolated) at larger gaps
+CAM_SMOOTH_POS_SIGMA = 1.0    # m, referencePosition
+CAM_SMOOTH_VEL_SIGMA = 5.0    # m/s, velocity from speed and heading
+CAM_SMOOTH_ACCEL = 2.0        # m/s^2, process noise (acceleration)
+M_PER_DEG = 111320.0
+
+
+def _kf_update(x, P, k, z, r):
+    """Scalar Kalman update of state component k with measurement z (variance r)."""
+    s_ = P[k][k] + r
+    K = (P[0][k] / s_, P[1][k] / s_)
+    y = z - x[k]
+    x = [x[0] + K[0] * y, x[1] + K[1] * y]
+    P = [[P[i][j] - K[i] * P[k][j] for j in range(2)] for i in range(2)]
+    return x, P
+
+
+def _rts_1d(ts, zp, zv):
+    """Smoothed [position, velocity] per sample for one axis (position zp, velocity zv | None)."""
+    sp2, sv2, qa2 = CAM_SMOOTH_POS_SIGMA ** 2, CAM_SMOOTH_VEL_SIGMA ** 2, CAM_SMOOTH_ACCEL ** 2
+    n = len(ts)
+    xf, Pf, xp, Pp = [], [], [None], [None]
+    x, P = [zp[0], 0.0], [[sp2, 0.0], [0.0, 100.0]]
+    if zv[0] is not None:
+        x, P = _kf_update(x, P, 1, zv[0], sv2)
+    xf.append(x); Pf.append(P)
+    for i in range(1, n):
+        dt = ts[i] - ts[i - 1]
+        x0, P0 = xf[-1], Pf[-1]
+        xpr = [x0[0] + dt * x0[1], x0[1]]
+        b = P0[0][1] + dt * P0[1][1] + dt ** 3 / 2 * qa2
+        Ppr = [[P0[0][0] + 2 * dt * P0[0][1] + dt * dt * P0[1][1] + dt ** 4 / 4 * qa2, b],
+               [b, P0[1][1] + dt * dt * qa2]]
+        x, P = _kf_update(xpr, Ppr, 0, zp[i], sp2)
+        if zv[i] is not None:
+            x, P = _kf_update(x, P, 1, zv[i], sv2)
+        xp.append(xpr); Pp.append(Ppr); xf.append(x); Pf.append(P)
+    xs = [None] * n
+    xs[-1] = xf[-1]
+    for i in range(n - 2, -1, -1):
+        dt = ts[i + 1] - ts[i]
+        P = Pf[i]
+        PFt = [[P[0][0] + dt * P[0][1], P[0][1]], [P[1][0] + dt * P[1][1], P[1][1]]]   # P F^T
+        A = Pp[i + 1]
+        det = A[0][0] * A[1][1] - A[0][1] * A[1][0]
+        inv = [[A[1][1] / det, -A[0][1] / det], [-A[1][0] / det, A[0][0] / det]]
+        C = [[sum(PFt[r][k] * inv[k][c] for k in range(2)) for c in range(2)] for r in range(2)]
+        dx = [xs[i + 1][0] - xp[i + 1][0], xs[i + 1][1] - xp[i + 1][1]]
+        xs[i] = [xf[i][0] + C[0][0] * dx[0] + C[0][1] * dx[1],
+                 xf[i][1] + C[1][0] * dx[0] + C[1][1] * dx[1]]
+    return xs
+
+
+def smooth_cam_track(positions: list) -> None:
+    """Append [smoothed lat, lon, velocity east, north (m/s)] to every (time sorted) position row."""
+    seg = []
+    for row in positions + [None]:
+        if row is not None and (not seg or row[0] - seg[-1][0] <= CAM_MAX_GAP):
+            seg.append(row)
+            continue
+        if seg:
+            lat0, lon0 = seg[0][1], seg[0][2]
+            ky, kx = M_PER_DEG, M_PER_DEG * math.cos(math.radians(lat0))
+            ts = [r[0] for r in seg]
+            ve, vn = [], []
+            for r in seg:
+                if r[3] is not None and r[4] is not None:
+                    v, h = r[3] / 3.6, math.radians(r[4])
+                    ve.append(v * math.sin(h)); vn.append(v * math.cos(h))
+                else:
+                    ve.append(None); vn.append(None)
+            ex = _rts_1d(ts, [(r[2] - lon0) * kx for r in seg], ve)
+            ny = _rts_1d(ts, [(r[1] - lat0) * ky for r in seg], vn)
+            for r, (x, vx), (y, vy) in zip(seg, ex, ny):
+                r.extend([round(lat0 + y / ky, 8), round(lon0 + x / kx, 8), round(vx, 2), round(vy, 2)])
+        seg = [row] if row is not None else []
 
 
 def compile_cam_asn(asn_dir: Path):
@@ -132,7 +225,8 @@ def cam_record(cam: dict, rx: float, names: dict) -> tuple:
     """(stationId, stationType, position row, incident) for one decoded CAM.
 
     position row: [rx time s, lat, lon, speed km/h | None, heading deg | None]
-    (the caller appends the incident index as row[5])
+    (the caller appends the incident index as row[5], smooth_cam_track the smoothed
+    position and velocity as row[6..9])
     incident: (container name, cause no | None, sub cause no | None, text) of the
     special vehicle container, or None.
     """
@@ -189,6 +283,9 @@ def build_candidate(denm: dict, names: dict, st_names: dict) -> dict:
 
     situation = payload.get('situation') or {}
     event_zone = situation.get('eventZone')
+    location = payload.get('location') or {}
+    hdg = location.get('eventPositionHeading')
+    spd = location.get('eventSpeed')
     st = mgmt['stationType']
     aid = mgmt['actionId']
     cause = None
@@ -209,6 +306,23 @@ def build_candidate(denm: dict, names: dict, st_names: dict) -> dict:
                       if event_zone else []),
         'traces': traces,
         'points': sum(len(t) for t in traces),
+        # eventPositionHeading (deg, None = absent / unavailable) and its confidence (0.1 deg, 127 = unavailable)
+        'heading': (hdg['value'] / 10 if hdg and hdg['value'] != WGS84_ANGLE_UNAVAILABLE else None),
+        'headingConf': hdg['confidence'] if hdg else None,
+        'speed': (round(spd['speedValue'] * 0.036, 1) if spd and spd['speedValue'] != SPEED_UNAVAILABLE else None),
+    }
+
+
+def denm_update(cand: dict) -> dict:
+    """Compact form of one DENM (first reception of a new detectionTime) for the real-time view."""
+    r7 = lambda x: round(x, 7)
+    return {
+        'rx': cand['rx'], 'seq': cand['seq'],
+        'lat': r7(cand['eventPosition']['lat']), 'lon': r7(cand['eventPosition']['lon']),
+        'hdg': cand['heading'], 'hdgConf': cand['headingConf'], 'spd': cand['speed'],
+        'term': cand['terminated'], 'cause': cand['cause'], 'eventType': cand['eventType'],
+        'traces': [[[r7(q['lat']), r7(q['lon']), q['dt']] for q in t] for t in cand['traces']],
+        'ez': [[r7(q['lat']), r7(q['lon'])] for q in cand['eventZone']],
     }
 
 
@@ -230,6 +344,7 @@ def collect(pcap_files: list, asn_dir: Path, cam_asn_dir) -> tuple:
     st_names = load_station_type_names(asn_dir)
     cams: dict = {}      # CAM stationId -> {'stationTypeNo', 'positions', 'incidents'}
     first_rx: dict = {}  # (stationId, seq, detectionTime) -> first reception time
+    updates: dict = {}   # stationId -> DENM updates (first reception of every detectionTime)
 
     best: dict = {}      # (stationId, seq) -> candidate with most trace points (tie: latest)
     n_denms: dict = {}   # (stationId, seq) -> number of DENMs
@@ -259,7 +374,11 @@ def collect(pcap_files: list, asn_dir: Path, cam_asn_dir) -> tuple:
             # Reception time of the first DENM with this detectionTime = time of the
             # eventPosition (repetitions of the same DENM are received later)
             det_key = (cand['stationId'], cand['seq'], denm['denm']['management']['detectionTime'])
-            cand['rx'] = round(first_rx.setdefault(det_key, rx), 3)
+            if det_key not in first_rx:
+                first_rx[det_key] = rx
+                cand['rx'] = round(rx, 3)
+                updates.setdefault(cand['stationId'], []).append(denm_update(cand))
+            cand['rx'] = round(first_rx[det_key], 3)
             key = (cand['stationId'], cand['seq'])
             n_denms[key] = n_denms.get(key, 0) + 1
             if key not in best or cand['points'] >= best[key]['points']:
@@ -277,7 +396,8 @@ def collect(pcap_files: list, asn_dir: Path, cam_asn_dir) -> tuple:
         default = max(entries, key=lambda c: (c['points'], c['seq']))
         result.append({'stationId': sid, 'default': default['seq'],
                        'stationTypeNo': default['stationTypeNo'],
-                       'stationType': default['stationType'], 'entries': entries})
+                       'stationType': default['stationType'], 'entries': entries,
+                       'updates': sorted(updates[sid], key=lambda u: u['rx'])})
 
     print(f'\nUnique originatingStationIds: {len(result)}')
     for st in result:
@@ -290,6 +410,7 @@ def collect(pcap_files: list, asn_dir: Path, cam_asn_dir) -> tuple:
     for sid in sorted(cams):
         c = cams[sid]
         c['positions'].sort(key=lambda r: r[0])
+        smooth_cam_track(c['positions'])   # row[6..9]: smoothed lat, lon, velocity east, north
         c['paths'].sort(key=lambda p: p[0])
         cam_list.append({
             'stationId': sid,
@@ -313,7 +434,7 @@ HTML_TEMPLATE = r'''<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DENM Trace Replay</title>
+<title>DENM Replay</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
@@ -368,6 +489,8 @@ HTML_TEMPLATE = r'''<!doctype html>
   .layer .minrow input[type=range] { flex:1; min-width:60px; }
   .layer .nval { min-width:22px; text-align:right; font-variant-numeric:tabular-nums; }
   .layer.off .lopts { opacity:.45; }
+  .hdg-ico { background:none; border:none; }
+  .hidden { display:none; }
   #phwarn { position:absolute; top:10px; left:50%; transform:translateX(-50%); z-index:1000; display:none;
             max-width:calc(100% - 120px); background:#b42318; color:#fff; border-radius:6px; padding:6px 12px;
             font-size:13px; box-shadow:0 2px 8px rgba(0,0,0,.4); pointer-events:none; }
@@ -386,28 +509,35 @@ HTML_TEMPLATE = r'''<!doctype html>
 <body>
 <div id="app">
   <div id="side">
-    <h1>DENM Trace Replay</h1>
+    <h1>DENM Replay</h1>
     <div class="muted" id="src"></div>
     <h2>stationType filter</h2>
     <div id="stfilter"></div>
     <h2>originatingStationId</h2>
     <div id="stations"></div>
-    <h2>sequenceNumber</h2>
-    <select id="seq"></select>
-    <div class="muted" id="seqinfo"></div>
-    <h2>Trace</h2>
-    <div id="traces"></div>
+    <h2>View</h2>
+    <label class="opt"><input type="radio" name="view" value="station"> All DENMs of the station in real time</label>
+    <label class="opt"><input type="radio" name="view" value="trace"> Trace replay of a single DENM</label>
+    <div id="traceSel">
+      <h2>sequenceNumber</h2>
+      <select id="seq"></select>
+      <div class="muted" id="seqinfo"></div>
+      <h2>Trace</h2>
+      <div id="traces"></div>
+    </div>
     <h2>CAM match</h2>
     <div id="cams" class="muted"></div>
     <h2>Visualize</h2>
     <div id="layercards"></div>
     <button id="resetView" title="Layer options and replay mode back to the defaults">Reset view</button>
+    <div id="modeSel">
     <h2>Replay mode</h2>
     <label class="opt"><input type="radio" name="mode" value="real" checked> Real time (pathDeltaTime)</label>
     <label class="opt"><input type="radio" name="mode" value="compress"> Real time, compress pauses</label>
     <div class="row" style="padding-left:22px"><span class="muted">cap per segment (s)</span>
       <input type="number" id="cap" value="5" min="0.1" step="0.5" style="width:70px"></div>
     <label class="opt"><input type="radio" name="mode" value="points"> Point by point (1 s per point at 1x)</label>
+    </div>
     <h2>Info</h2>
     <div id="info" class="muted"></div>
   </div>
@@ -443,7 +573,10 @@ map.setView([50, 10], 5);
 
 // Previews below the replayed tracks
 map.createPane('previewPane').style.zIndex = 390;
-const layers = { ez: L.layerGroup().addTo(map), static: L.layerGroup().addTo(map) };
+// ez: eventZone; static: eventPosition marker (trace view); epHdg: its heading arrow (trace view);
+// cur: trace of the current DENM (real-time view)
+const layers = { ez: L.layerGroup().addTo(map), static: L.layerGroup().addTo(map),
+                 epHdg: L.layerGroup().addTo(map), cur: L.layerGroup().addTo(map) };
 const mover = L.circleMarker([0, 0], { radius: 7, color: '#fff', weight: 2, fillColor: '#ff3b30', fillOpacity: 1 });
 const camMover = L.circleMarker([0, 0], { radius: 7, color: '#fff', weight: 2, fillColor: '#1570ef', fillOpacity: 1 })
   .bindTooltip('', { permanent: true, direction: 'left', className: 'cam-lbl', offset: [-8, 0] });
@@ -454,16 +587,23 @@ const camMover = L.circleMarker([0, 0], { radius: 7, color: '#fff', weight: 2, f
 const LAYERS = {
   denm: { title: 'DENM', sub: 'trace PathPoints', color: '#ff3b30', fill: '#ffb020', preview: '#ffffff',
           lblClass: 'lbl', lblText: 'pathDeltaTime',
-          def: { show: true, points: true, labels: true, preview: false, minimal: true, n: 8, ez: true } },
+          def: { show: true, points: true, labels: true, preview: false, minimal: true, n: 8, ez: true, heading: false } },
   cam:  { title: 'CAM', sub: 'positions of the matched CAM station', color: '#2e90fa', fill: '#84caff', preview: '#84caff',
           lblClass: 'campt-lbl', lblText: 'time to prev. CAM',
-          def: { show: true, points: true, labels: false, preview: false, minimal: true, n: 15 } },
+          def: { show: true, points: true, labels: false, preview: false, minimal: true, n: 15, smooth: false, heading: false } },
   ph:   { title: 'CAM pathHistory', sub: 'from replay start', color: '#7cfc00', fill: '#3f9c0a', preview: '#c5f6a0',
           lblClass: 'ph-lbl', lblText: 'pathDeltaTime',
           def: { show: true, points: true, labels: false, preview: false, minimal: true, n: 15 } },
 };
 const MINIMAL_MAX = 40;
 const opts = Object.fromEntries(Object.entries(LAYERS).map(([k, d]) => [k, { ...d.def }]));
+
+// Heading arrow (degrees clockwise from north) just ahead of a point
+function arrowIcon(deg, color) {
+  return L.divIcon({ className: 'hdg-ico', iconSize: [24, 24], iconAnchor: [12, 12],
+    html: `<svg width="24" height="24" viewBox="-12 -12 24 24" style="transform:rotate(${deg}deg)">` +
+          `<path d="M0,-11 L5,-1 L0,-3.5 L-5,-1 Z" fill="${color}" stroke="#fff" stroke-width="1.2"/></svg>` });
+}
 
 class Track {
   constructor(d) {
@@ -483,22 +623,34 @@ class Track {
   update(pts, head, o) {
     let vis = pts;
     if (o.minimal) {
+      // count only real points; anchors at the end are kept, curve samples ('via') only between kept points
       let c = 0, i = pts.length;
-      while (i > 0 && (pts[i - 1].anchor || c < o.n)) { if (!pts[i - 1].anchor) c++; i--; }
+      while (i > 0) {
+        const p = pts[i - 1];
+        if (!p.anchor && !p.via) { if (c >= o.n) break; c++; }
+        else if (p.via && c >= o.n) break;
+        i--;
+      }
       vis = pts.slice(i);
     }
     this.line.setLatLngs([...vis.map(p => [p.lat, p.lon]), ...(head ? [[head.lat, head.lon]] : [])]);
-    const want = new Set((o.points || o.labels) ? vis.filter(p => !p.anchor).map(p => p.id) : []);
+    const marked = p => !p.anchor && !p.via && (o.points || o.labels || (o.heading && p.hdg != null));
+    const want = new Set(vis.filter(marked).map(p => p.id));
     for (const [id, m] of this.markers) if (!want.has(id)) { this.group.removeLayer(m); this.markers.delete(id); }
     for (const p of vis) {
       if (!want.has(p.id) || this.markers.has(p.id)) continue;
+      const ll = [p.mlat ?? p.lat, p.mlon ?? p.lon];   // marker position (received CAM position for the CAM track)
+      const g = L.layerGroup();
+      if (o.heading && p.hdg != null)
+        L.marker(ll, { icon: arrowIcon(p.hdg, this.d.color), interactive: false, keyboard: false }).addTo(g);
       const m = o.points
-        ? L.circleMarker([p.lat, p.lon], { radius: 4.5, color: '#fff', weight: 1.5, fillColor: this.d.fill, fillOpacity: 1 })
-        : L.circleMarker([p.lat, p.lon], { radius: 2, stroke: false, fillOpacity: 0 });
+        ? L.circleMarker(ll, { radius: 4.5, color: '#fff', weight: 1.5, fillColor: this.d.fill, fillOpacity: 1 })
+        : L.circleMarker(ll, { radius: 2, stroke: false, fillOpacity: 0 });
       if (p.popup) m.bindPopup(p.popup);
       if (o.labels && p.lbl) m.bindTooltip(p.lbl, { permanent: true, direction: 'right', className: this.d.lblClass, offset: [6, 0] });
-      this.group.addLayer(m);
-      this.markers.set(p.id, m);
+      m.addTo(g);
+      this.group.addLayer(g);
+      this.markers.set(p.id, g);
     }
   }
   setPreview(latlngs) {
@@ -527,9 +679,13 @@ function setMover(m, pos) {
   else if (map.hasLayer(m)) map.removeLayer(m);
 }
 
-// t0abs: reception time (s) of the last trace point, so that the eventPosition is at the DENM reception time
+// t0abs: capture time (s) of replay time 0. Trace view: time of the last trace point, so that the
+// eventPosition is at the DENM reception time. Real-time view: just before the first DENM.
+// ref: what the CAMs are matched against ({pts: [{lat, lon, t}], t0, t1, cause, stationId, stationTypeNo, what})
 const st = { station: null, entry: null, traceIdx: 0, seqPts: [], denmPts: [], T: [], realT: [],
-             t: 0, total: 0, playing: false, speed: 1, last: null, t0abs: 0, cam: null, camRank: [] };
+             t: 0, total: 0, playing: false, speed: 1, last: null, t0abs: 0, cam: null, camRank: [],
+             ref: null, curIdx: -1 };
+const view = () => document.querySelector('input[name=view]:checked').value;
 
 const $ = id => document.getElementById(id);
 $('src').textContent = DATA.source;
@@ -570,8 +726,8 @@ function renderStations() {
     const div = document.createElement('div');
     div.className = 'station' + (st.station === s ? ' sel' : '');
     div.innerHTML = `<b>${s.stationId}</b> &middot; ${d.stationType}<br>
-      <span class="muted">${d.eventType}<br>best: seq ${d.seq}, ${d.points} trace points
-      &middot; ${s.entries.length} sequenceNumber(s)</span>`;
+      <span class="muted">${d.eventType}<br>${s.updates.length} DENM update(s) in ${s.entries.length} sequenceNumber(s)
+      &middot; best trace: seq ${d.seq}, ${d.points} points</span>`;
     div.onclick = () => selectStation(s);
     box.appendChild(div);
   }
@@ -580,6 +736,7 @@ function renderStations() {
 function selectStation(s) {
   st.station = s;
   renderStations();
+  if (view() === 'station') { selectStationRealtime(); return; }
   const sel = $('seq');
   sel.innerHTML = '';
   for (const e of s.entries) {
@@ -609,6 +766,99 @@ function selectEntry(e) {
     box.appendChild(lab);
   });
   selectTrace(0);
+}
+
+// ─── Real-time view: all DENMs of the station on the capture clock ─────────
+// Every new detectionTime of the station (first reception) is one update with its eventPosition,
+// eventPositionHeading, eventSpeed, traces and eventZone.
+function selectStationRealtime() {
+  pause();
+  st.entry = null;
+  const s = st.station, U = s.updates;
+  st.t0abs = U[0].rx - 1;
+  st.total = U[U.length - 1].rx + 1 - st.t0abs;
+  st.curIdx = -1;
+  const causes = U.filter(u => u.cause).map(u => u.cause);
+  st.ref = { pts: U.map(u => ({ lat: u.lat, lon: u.lon, t: u.rx })), t0: U[0].rx, t1: U[U.length - 1].rx,
+             cause: causes.length ? causes[causes.length - 1] : null, stationId: s.stationId,
+             stationTypeNo: s.stationTypeNo, what: 'eventPositions' };
+  const tStr = t => new Date(t * 1000).toISOString().slice(11, 23);
+  st.denmPts = U.map((u, i) => {
+    const prev = i ? U[i - 1] : null, newSeq = !prev || prev.seq !== u.seq;
+    return { id: i, t: u.rx, lat: u.lat, lon: u.lon, hdg: u.hdg,
+             lbl: newSeq ? `seq ${u.seq}` : `${(u.rx - prev.rx).toFixed(2)} s`,
+             popup: `<b>DENM ${s.stationId}/${u.seq}</b>${u.term ? ' (termination)' : ''}<br>received ${tStr(u.rx)} UTC` +
+                    (prev ? `<br>time to previous DENM update: ${(u.rx - prev.rx).toFixed(3)} s` : '') +
+                    `<br>${u.eventType}<br>eventPositionHeading ${u.hdg ?? 'n/a'}°` +
+                    (u.hdg != null ? ` (confidence ${u.hdgConf === 127 ? 'unavailable' : (u.hdgConf / 10) + '°'})` : '') +
+                    `<br>eventSpeed ${u.spd ?? 'n/a'} km/h<br>traces: ${u.traces.map(t => t.length).join('/') || '-'} PathPoints` };
+  });
+  Object.values(tracks).forEach(tr => tr.reset());
+  layers.static.clearLayers(); layers.epHdg.clearLayers(); layers.cur.clearLayers(); layers.ez.clearLayers();
+
+  // Ticks at the start of every sequenceNumber
+  const ticks = $('ticks');
+  ticks.innerHTML = '';
+  U.forEach((u, i) => {
+    if (i && U[i - 1].seq === u.seq) return;
+    const sp = document.createElement('span');
+    sp.style.left = `${((u.rx - st.t0abs) / st.total) * 100}%`;
+    sp.title = `seq ${u.seq}`;
+    ticks.appendChild(sp);
+  });
+
+  const seqs = [];
+  U.forEach(u => {
+    let q = seqs[seqs.length - 1];
+    if (!q || q.seq !== u.seq) seqs.push(q = { seq: u.seq, n: 0, from: u.rx, to: u.rx, term: false });
+    q.n++; q.to = u.rx; q.term = q.term || u.term;
+  });
+  $('info').innerHTML = `originatingStationId ${s.stationId}<br>stationType ${s.stationType}<br>
+    ${U.length} DENM updates (new detectionTime) from ${tStr(U[0].rx)} to ${tStr(U[U.length - 1].rx)} UTC
+    (capture clock)<br>` + seqs.map(q => `seq ${q.seq}: ${q.n} update(s), ${(q.to - q.from).toFixed(1)} s${q.term ? ', terminated' : ''}`).join('<br>');
+
+  updatePreviews();
+  applyDisplay();
+  st.t = 0;
+  rankCams();
+  const bounds = L.latLngBounds(U.map(u => [u.lat, u.lon]));
+  map.fitBounds(bounds, { padding: [40, 40], maxZoom: 19 });
+}
+
+// Current DENM (latest update up to the replay time): its first trace and its eventZone
+function renderCurrentDenm(i) {
+  if (i === st.curIdx) return;
+  st.curIdx = i;
+  layers.cur.clearLayers(); layers.ez.clearLayers();
+  if (i < 0) return;
+  const u = st.station.updates[i];
+  for (const tr of u.traces) {
+    if (!tr.length) continue;
+    L.polyline([[u.lat, u.lon], ...tr.map(q => [q[0], q[1]])], { color: '#ff8a80', weight: 2, opacity: .9, dashArray: '3 5' })
+      .addTo(layers.cur);
+    tr.forEach(q => L.circleMarker([q[0], q[1]], { radius: 2, stroke: false, fillColor: '#ff8a80', fillOpacity: .9 }).addTo(layers.cur));
+  }
+  if (u.ez.length) {
+    L.polyline([[u.lat, u.lon], ...u.ez], { color: '#12b76a', weight: 4, opacity: .85 }).addTo(layers.ez);
+  }
+}
+
+function renderStationRealtime() {
+  const U = st.station.updates;
+  const t = Math.min(Math.max(st.t, 0), st.total), absT = st.t0abs + t;
+  const i = lastIdx(U, absT, u => u.rx);
+  tracks.denm.update(st.denmPts.slice(0, i + 1), null, opts.denm);
+  renderCurrentDenm(i);
+  const u = i >= 0 ? U[i] : null;
+  setMover(mover, opts.denm.show && u ? u : null);
+  $('timeline').value = st.total ? Math.round(t / st.total * 10000) : 0;
+  const camTxt = renderCam(absT, u || U[0]);
+  const denmTxt = u
+    ? `DENM ${st.station.stationId}/${u.seq}${u.term ? ' TERMINATED' : ''}, ${(absT - u.rx).toFixed(1)} s ago, ` +
+      `heading ${u.hdg ?? 'n/a'}°, ${u.spd ?? 'n/a'} km/h`
+    : 'no DENM yet';
+  $('status').textContent = `${t.toFixed(1)} / ${st.total.toFixed(1)} s  ·  ${new Date(absT * 1000).toISOString().slice(11, 23)} UTC  ·  ` +
+    denmTxt + camTxt;
 }
 
 function selectTrace(i) {
@@ -654,15 +904,24 @@ function build() {
   }
   st.seqPts = seq; st.T = T; st.realT = realT; st.total = T[T.length - 1];
   st.t0abs = e.rx - realT[realT.length - 1];
+  st.ref = { pts: seq.map((p, k) => ({ lat: p.lat, lon: p.lon, t: st.t0abs + realT[k] })), t0: st.t0abs, t1: e.rx,
+             cause: e.cause, stationId: e.stationId, stationTypeNo: e.stationTypeNo, what: 'trace' };
 
   // Static layers (shown with the DENM, hidden in its minimal view)
-  layers.ez.clearLayers(); layers.static.clearLayers();
+  layers.ez.clearLayers(); layers.static.clearLayers(); layers.epHdg.clearLayers(); layers.cur.clearLayers();
+  if (e.heading != null) {
+    L.marker([ep.lat, ep.lon], { icon: arrowIcon(e.heading, '#ff3b30'), interactive: false, keyboard: false })
+      .addTo(layers.epHdg);
+  }
   if (e.eventZone.length) {
     L.polyline([[ep.lat, ep.lon], ...e.eventZone.map(p => [p.lat, p.lon])],
                { color: '#12b76a', weight: 4, opacity: .85 }).addTo(layers.ez);
   }
   L.circleMarker([ep.lat, ep.lon], { radius: 9, color: '#fff', weight: 2, fillColor: '#d92d20', fillOpacity: 1 })
     .bindTooltip(`${e.stationId}/${e.seq} | ${e.eventType}`, { permanent: true, direction: 'top', className: 'ep-lbl', offset: [0, -8] })
+    .bindPopup(`<b>eventPosition ${e.stationId}/${e.seq}</b><br>eventPositionHeading ${e.heading ?? 'n/a'}°` +
+               (e.heading != null ? ` (confidence ${e.headingConf === 127 ? 'unavailable' : (e.headingConf / 10) + '°'})` : '') +
+               `<br>eventSpeed ${e.speed ?? 'n/a'} km/h`)
     .addTo(layers.static);
 
   st.denmPts = seq.map((p, k) => p.isEp
@@ -700,7 +959,7 @@ function build() {
 // CAM positions are rows [rx time s, lat, lon, speed km/h, heading deg, incident index].
 // DENM trace and CAMs share the capture (receiver) clock: the eventPosition is
 // placed at the DENM reception time, every PathPoint pathDeltaTime earlier.
-const CAM_MAX_GAP = 3;      // s; no CAM position is interpolated across larger gaps
+const CAM_MAX_GAP = __CAM_MAX_GAP__;   // s; no CAM position is interpolated across larger gaps
 const CAM_WINDOW = 5;       // s added before/after the DENM trace time span
 const CAM_AUTO_SELECT = 50; // minimum score for the automatic CAM selection
 // Special vehicle containers that fit a DENM cause code (no incidentIndication match)
@@ -711,41 +970,60 @@ const PLAUSIBLE_CONTAINER = {
   26: ['roadWorksContainerBasic', 'specialTransportContainer', 'safetyCarContainer'],  // slowVehicle
 };
 
-function camPosAt(c, t) {
+// CAM position at time t on the smoothed track (row[6..9]: smoothed lat, lon, velocity
+// east, north in m/s, computed in Python); between two CAMs cubic Hermite interpolation
+// with the smoothed velocities, so position and direction change continuously.
+const M_PER_DEG = 111320;
+function hermite(a, b, t) {
+  const dt = b[0] - a[0];
+  if (dt <= 0) return { lat: a[6], lon: a[7] };
+  const ky = M_PER_DEG, kx = M_PER_DEG * Math.cos(a[6] * Math.PI / 180);
+  const bx = (b[7] - a[7]) * kx, by = (b[6] - a[6]) * ky;
+  const s = (t - a[0]) / dt, s2 = s * s, s3 = s2 * s;
+  const h10 = s3 - 2 * s2 + s, h01 = -2 * s3 + 3 * s2, h11 = s3 - s2;
+  const x = h10 * dt * a[8] + h01 * bx + h11 * dt * b[8];
+  const y = h10 * dt * a[9] + h01 * by + h11 * dt * b[9];
+  return { lat: a[6] + y / ky, lon: a[7] + x / kx };
+}
+// smooth = false: received positions, linear interpolation (also used for the CAM matching)
+function camPosAt(c, t, smooth = false) {
   const P = c.positions;
   if (!P.length || t < P[0][0] - 1 || t > P[P.length - 1][0] + 1) return null;
   let lo = 0, hi = P.length - 1;
   while (hi - lo > 1) { const m = (lo + hi) >> 1; if (P[m][0] <= t) lo = m; else hi = m; }
-  const a = P[lo], b = P[hi];
-  if (t <= a[0]) return { lat: a[1], lon: a[2], row: a };
-  if (t >= b[0]) return { lat: b[1], lon: b[2], row: b };
+  const a = P[lo], b = P[hi], iLat = smooth ? 6 : 1, iLon = smooth ? 7 : 2;
+  if (t <= a[0]) return { lat: a[iLat], lon: a[iLon], row: a };
+  if (t >= b[0]) return { lat: b[iLat], lon: b[iLon], row: b };
   if (b[0] - a[0] > CAM_MAX_GAP) return null;
+  const row = (t - a[0]) < (b[0] - t) ? a : b;
+  if (smooth) return { ...hermite(a, b, t), row };
   const f = (t - a[0]) / (b[0] - a[0]);
-  return { lat: a[1] + (b[1] - a[1]) * f, lon: a[2] + (b[2] - a[2]) * f, row: f < .5 ? a : b };
+  return { lat: a[1] + (b[1] - a[1]) * f, lon: a[2] + (b[2] - a[2]) * f, row };
 }
+const CAM_SAMPLE = 0.1;   // s between the curve points of the drawn CAM track
 
 const clamp01 = x => Math.max(0, Math.min(1, x));
 const median = arr => { const s = [...arr].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
 
 function scoreCam(c) {
-  const e = st.entry, P = st.seqPts;
-  const t1 = e.rx, t0 = st.t0abs;
+  const e = st.ref, P = e.pts;
+  const t1 = e.t1, t0 = e.t0;
   const win = c.positions.filter(r => r[0] >= t0 - CAM_WINDOW && r[0] <= t1 + CAM_WINDOW);
   if (!win.length) return null;
 
   // Trace: distance between each trace point and the CAM position at the same time
   const dists = [];
-  P.forEach((p, k) => { const q = camPosAt(c, t0 + st.realT[k]); if (q) dists.push(haversine(p, q)); });
+  P.forEach(p => { const q = camPosAt(c, p.t); if (q) dists.push(haversine(p, q)); });
   let trace, traceTxt;
   if (dists.length >= 2) {
     const med = median(dists);
     trace = clamp01((50 - med) / 45);               // <= 5 m: 1, >= 50 m: 0
-    traceTxt = `trace ${med.toFixed(1)} m median (${dists.length} pts at same time)`;
+    traceTxt = `${e.what} ${med.toFixed(1)} m median (${dists.length} pts at same time)`;
   } else {
     const near = P.map(p => Math.min(...win.map(r => haversine(p, { lat: r[1], lon: r[2] }))));
     const med = median(near);
     trace = 0.5 * clamp01((50 - med) / 45);         // spatial only: half weight
-    traceTxt = `trace ${med.toFixed(1)} m median (spatial only)`;
+    traceTxt = `${e.what} ${med.toFixed(1)} m median (spatial only)`;
   }
 
   // Timing: share of the DENM trace time span covered by CAMs of this station
@@ -781,7 +1059,7 @@ function rankCams() {
   const box = $('cams');
   box.innerHTML = '';
   if (!DATA.cams.length) { box.textContent = 'No CAMs decoded.'; selectCam(null); return; }
-  if (!st.camRank.length) { box.textContent = 'No CAMs in the time window of this DENM trace.'; selectCam(null); return; }
+  if (!st.camRank.length) { box.textContent = 'No CAMs in the time window of the DENM(s).'; selectCam(null); return; }
   const best = st.camRank[0].score >= CAM_AUTO_SELECT ? st.camRank[0] : null;
   const mk = r => {
     const lab = document.createElement('label');
@@ -805,14 +1083,24 @@ function selectCam(r) {
   if (r) {
     // CAM points of the time window with the time to the previous CAM of the station
     const P = r.c.positions, i0 = P.indexOf(r.win[0]);
-    r.rows = r.win.map((row, i) => {
+    // rowsRaw: received positions; rowsSmooth: smoothed track with curve samples ('via') between the
+    // CAMs, the markers stay at the received positions (mlat/mlon)
+    r.rowsRaw = []; r.rowsSmooth = [];
+    r.win.forEach((row, i) => {
       const prev = P[i0 + i - 1];
       const dt = prev ? row[0] - prev[0] : null;
-      return { id: row[0], lat: row[1], lon: row[2], row,
+      if (prev && dt <= CAM_MAX_GAP) {
+        for (let ts = prev[0] + CAM_SAMPLE; ts < row[0] - CAM_SAMPLE / 2; ts += CAM_SAMPLE)
+          r.rowsSmooth.push({ id: `v${ts}`, t: ts, via: true, ...hermite(prev, row, ts) });
+      }
+      const pt = { id: row[0], t: row[0], lat: row[1], lon: row[2], row, hdg: row[4],
                lbl: dt !== null ? `${dt.toFixed(2)} s` : 'n/a',
                popup: `<b>CAM ${r.c.stationId}</b><br>received ${new Date(row[0] * 1000).toISOString().slice(11, 23)} UTC` +
                       `<br>time to previous CAM: ${dt !== null ? dt.toFixed(3) + ' s' : 'n/a'}` +
-                      `<br>speed ${row[3] ?? 'n/a'} km/h, heading ${row[4] ?? 'n/a'}°` };
+                      `<br>speed ${row[3] ?? 'n/a'} km/h, heading ${row[4] ?? 'n/a'}°` +
+                      `<br>smoothed position ${haversine({ lat: row[1], lon: row[2] }, { lat: row[6], lon: row[7] }).toFixed(1)} m from the received one` };
+      r.rowsRaw.push(pt);
+      r.rowsSmooth.push({ ...pt, lat: row[6], lon: row[7], mlat: row[1], mlon: row[2] });
     });
   }
   tracks.cam.reset(); tracks.ph.reset();
@@ -880,12 +1168,15 @@ function phPoints(r, absT) {
   return { pts: out, ph };
 }
 
+const camRows = r => opts.cam.smooth ? r.rowsSmooth : r.rowsRaw;
+
 // Full previews = what each layer shows at the end of the replay
 function updatePreviews() {
   const r = st.cam;
-  tracks.denm.setPreview(st.seqPts.map(p => [p.lat, p.lon]));
-  tracks.cam.setPreview(r ? r.win.map(p => [p[1], p[2]]) : []);
-  tracks.ph.setPreview(r && st.entry ? phPoints(r, st.entry.rx).pts.map(p => [p.lat, p.lon]) : []);
+  tracks.denm.setPreview(view() === 'station' && st.station ? st.station.updates.map(u => [u.lat, u.lon])
+                                                         : st.seqPts.map(p => [p.lat, p.lon]));
+  tracks.cam.setPreview(r ? camRows(r).map(p => [p.lat, p.lon]) : []);
+  tracks.ph.setPreview(r && st.ref ? phPoints(r, st.ref.t1).pts.map(p => [p.lat, p.lon]) : []);
 }
 
 function renderCam(absT, denmPos) {
@@ -897,16 +1188,20 @@ function renderCam(absT, denmPos) {
     return '';
   }
   let txt = '';
-  // CAM track: received CAMs up to absT; head = interpolated position (minimal view: latest received CAM)
-  const pts = r.rows.slice(0, lastIdx(r.rows, absT, x => x.id) + 1);
-  const q = camPosAt(r.c, absT);
-  tracks.cam.update(pts, oc.minimal ? null : q, oc);
+  // CAM track up to absT. Smoothing on: smoothed track (curve samples included), head = smoothed
+  // position at absT. Off: received positions, head = linear interpolation (minimal view: the
+  // marker stays on the latest received CAM).
+  const rows = camRows(r), sm = oc.smooth;
+  const pts = rows.slice(0, lastIdx(rows, absT, x => x.t) + 1);
+  const q = camPosAt(r.c, absT, sm);
   const latest = pts.length ? pts[pts.length - 1] : null;
-  const cpos = oc.minimal ? latest : q;
+  const head = sm || !oc.minimal ? q : null;
+  tracks.cam.update(pts, head, oc);
+  const cpos = head || (sm ? null : latest);
   setMover(camMover, oc.show ? cpos : null);
   if (oc.show) {
     if (cpos) {
-      const row = oc.minimal ? latest.row : q.row;
+      const row = head ? q.row : latest.row;
       const spd = row[3] !== null ? `${row[3].toFixed(0)} km/h` : '';
       camMover.setTooltipContent(`CAM ${r.c.stationId} ${spd}`);
       txt += `  ·  CAM ${r.c.stationId} ${haversine(cpos, denmPos).toFixed(1)} m from DENM position${spd ? ', ' + spd : ''}`;
@@ -927,6 +1222,7 @@ function renderCam(absT, denmPos) {
 
 // ─── Rendering at replay time t ────────────────────────────────────────────
 function render() {
+  if (view() === 'station') { if (st.station) renderStationRealtime(); return; }
   const { seqPts: P, T } = st;
   if (!P.length) return;
   const t = Math.min(Math.max(st.t, 0), st.total);
@@ -954,9 +1250,14 @@ function applyDisplay() {
     o.show ? tr.group.addTo(map) : map.removeLayer(tr.group);
     o.show && o.preview ? tr.previewGroup.addTo(map) : map.removeLayer(tr.previewGroup);
   }
-  const d = opts.denm, full = d.show && !d.minimal;   // minimal DENM view: no eventPosition / eventZone
-  full ? layers.static.addTo(map) : map.removeLayer(layers.static);
+  // minimal DENM view: no eventPosition marker / current trace / eventZone
+  const d = opts.denm, full = d.show && !d.minimal, rt = view() === 'station';
+  full && !rt ? layers.static.addTo(map) : map.removeLayer(layers.static);
+  full && !rt && d.heading ? layers.epHdg.addTo(map) : map.removeLayer(layers.epHdg);
+  full && rt ? layers.cur.addTo(map) : map.removeLayer(layers.cur);
   full && d.ez ? layers.ez.addTo(map) : map.removeLayer(layers.ez);
+  $('traceSel').classList.toggle('hidden', rt);
+  $('modeSel').classList.toggle('hidden', rt);
   document.querySelectorAll('.layer').forEach(el => el.classList.toggle('off', !opts[el.dataset.layer].show));
 }
 
@@ -969,12 +1270,16 @@ function renderLayerCards() {
     div.className = 'layer';
     div.dataset.layer = k;
     const cb = (opt, text) => `<label><input type="checkbox" data-opt="${opt}" ${o[opt] ? 'checked' : ''}> ${text}</label>`;
+    const rt = k === 'denm' && view() === 'station';
+    const sub = rt ? 'eventPositions of all DENMs' : d.sub, lbl = rt ? 'time to prev. DENM' : d.lblText;
+    const extras = k === 'denm' ? cb('ez', 'eventZone') + cb('heading', 'eventPositionHeading')
+                 : k === 'cam' ? cb('smooth', 'smoothing') + cb('heading', 'heading') : '';
     div.innerHTML = `
       <label class="lhead"><input type="checkbox" data-opt="show" ${o.show ? 'checked' : ''}>
-        <span class="swatch" style="background:${d.color}"></span>${d.title}<span class="muted">${d.sub}</span></label>
+        <span class="swatch" style="background:${d.color}"></span>${d.title}<span class="muted">${sub}</span></label>
       <div class="lopts">
-        ${cb('points', 'points')}${cb('labels', d.lblText)}
-        ${cb('preview', 'full preview')}${k === 'denm' ? cb('ez', 'eventZone') : '<span></span>'}
+        ${cb('points', 'points')}${cb('labels', lbl)}
+        ${cb('preview', 'full preview')}${extras}
         <div class="minrow">${cb('minimal', 'minimal: last')}
           <input type="range" data-opt="n" min="1" max="${MINIMAL_MAX}" value="${o.n}" ${o.minimal ? '' : 'disabled'}>
           <span class="nval">${o.n}</span> points</div>
@@ -984,7 +1289,8 @@ function renderLayerCards() {
       if (opt === 'n') { o.n = +inp.value; div.querySelector('.nval').textContent = o.n; }
       else o[opt] = inp.checked;
       if (opt === 'minimal') div.querySelector('input[data-opt=n]').disabled = !o.minimal;
-      if (opt === 'points' || opt === 'labels') tracks[k].reset();
+      if (['points', 'labels', 'smooth', 'heading'].includes(opt)) tracks[k].reset();
+      if (opt === 'smooth') updatePreviews();
       applyDisplay();
       render();
     });
@@ -1002,7 +1308,7 @@ function frame(ts) {
   requestAnimationFrame(frame);
 }
 function play() {
-  if (!st.entry) return;
+  if (!st.total) return;
   if (st.t >= st.total) st.t = 0;
   st.playing = true; st.last = null; $('play').textContent = 'Pause';
   requestAnimationFrame(frame);
@@ -1032,6 +1338,13 @@ $('resetView').onclick = () => {
   applyDisplay();
   render();
 };
+document.querySelector(`input[name=view][value=${DATA.view}]`).checked = true;
+document.querySelectorAll('input[name=view]').forEach(r => r.onchange = () => {
+  pause();
+  renderLayerCards();
+  applyDisplay();
+  if (st.station) selectStation(st.station);
+});
 renderLayerCards();
 renderFilter();
 renderStations();
@@ -1042,7 +1355,7 @@ if (pre) {
     $('stfilter').querySelector(`input[data-st="${pre.stationTypeNo}"]`).checked = true;
   }
   selectStation(pre);
-  if (DATA.preselect.seq !== null && pre.entries.some(e => e.seq === DATA.preselect.seq)) {
+  if (view() === 'trace' && DATA.preselect.seq !== null && pre.entries.some(e => e.seq === DATA.preselect.seq)) {
     $('seq').value = DATA.preselect.seq;
     selectEntry(pre.entries.find(e => e.seq === DATA.preselect.seq));
   }
@@ -1069,6 +1382,9 @@ def main() -> None:
                         help='Preselect this originatingStationId in the page')
     parser.add_argument('--seq', type=int, metavar='N',
                         help='Preselect this sequenceNumber (with --station)')
+    parser.add_argument('--view', choices=['station', 'trace'],
+                        help='Initial view: all DENMs of the station in real time (default) or the '
+                             'trace replay of a single DENM (default with --seq)')
     parser.add_argument('--no-open', action='store_true',
                         help='Do not open the page in the browser')
     parser.add_argument('--asn-dir', type=Path, default=DEFAULT_ASN_DIR, metavar='DIR',
@@ -1091,9 +1407,11 @@ def main() -> None:
         'cams': cams,
         'preselect': ({'station': args.station, 'seq': args.seq}
                       if args.station is not None else None),
+        'view': args.view or ('trace' if args.seq is not None else 'station'),
     }
     out = args.output if args.output.endswith('.html') else args.output + '.html'
     html = (HTML_TEMPLATE.replace('__RSU__', str(RSU_STATION_TYPE))
+            .replace('__CAM_MAX_GAP__', str(CAM_MAX_GAP))
             .replace('__DATA__', json.dumps(data).replace('</', '<\\/')))
     Path(out).write_text(html, encoding='utf-8')
     print(f'\nOutput written to: {out}')
