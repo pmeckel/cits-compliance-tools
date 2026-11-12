@@ -200,6 +200,14 @@ connection for the map tiles):
   places the CAM marker on the latest received CAM. Every point has a popup
   with its details; heading arrows sit just ahead of the point.
 
+  Each layer card shows the options as compact toggle chips (*points*,
+  *labels*, *preview*, *eventZone* / *heading* / *smooth* where available,
+  *minimal* with its slider); the full meaning of each chip is in its tooltip.
+  The options of a hidden layer are collapsed. In DENM traces and CAM
+  pathHistory, the step from the latest recorded point to the eventPosition /
+  referencePosition is drawn as a faint dotted line in the layer colour, since
+  it is not part of the recorded path.
+
   Defaults at start: all four layers shown with points, in the minimal view
   (DENM and DENM traces 8 points, CAM and CAM pathHistory 15 points), no full
   previews, no heading arrows, smoothing on (DENM and CAM); labels only for the DENM traces

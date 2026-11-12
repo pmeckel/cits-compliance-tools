@@ -464,18 +464,24 @@ HTML_TEMPLATE = r'''<!doctype html>
   .tl::before { display:none; }
   .lbl-denm { background:var(--c-denm); } .lbl-dtr { background:var(--c-dtr); }
   .lbl-cam { background:var(--c-cam); } .lbl-ph { background:var(--c-ph); }
-  .layer { border:1px solid var(--line); border-radius:6px; padding:6px 8px; margin-bottom:6px; }
+  .layer { border:1px solid var(--line); border-left:4px solid var(--lc); border-radius:6px; padding:5px 8px; margin-bottom:6px; }
   .layer .lhead { display:flex; align-items:center; gap:6px; }
-  .layer .lhead label { display:flex; align-items:center; gap:6px; font-weight:600; cursor:pointer; }
-  .layer .lhead .muted { margin-left:auto; text-align:right; }
-  .layer input[type=color] { width:26px; height:20px; padding:0; border:1px solid var(--line); border-radius:4px;
-                             background:none; cursor:pointer; vertical-align:middle; }
-  .layer .lopts { display:grid; grid-template-columns:1fr 1fr; gap:2px 10px; margin-top:4px; padding-left:22px; font-size:13px; }
-  .layer .lopts label { cursor:pointer; white-space:nowrap; }
-  .layer .minrow { grid-column:1 / -1; display:flex; align-items:center; gap:6px; }
+  .layer .lhead label { display:flex; align-items:center; gap:6px; font-weight:600; cursor:pointer; white-space:nowrap; }
+  .layer input[type=color] { width:20px; height:18px; padding:0; border:1px solid var(--line); border-radius:4px;
+                             background:none; cursor:pointer; flex:none; }
+  .layer .lbody { margin-top:5px; }
+  .layer.off .lbody { display:none; }
+  .chips { display:flex; flex-wrap:wrap; gap:4px; }
+  .chip { position:relative; display:inline-flex; align-items:center; gap:4px; padding:1px 8px; font-size:12px;
+          border:1px solid var(--line); border-radius:10px; cursor:pointer; user-select:none; color:var(--muted); }
+  .chip input[type=checkbox] { position:absolute; opacity:0; width:0; height:0; margin:0; }
+  .chip:has(input:checked) { color:var(--text); border-color:var(--lc); background:color-mix(in srgb, var(--lc) 22%, transparent); }
+  .chip:has(input:focus-visible) { outline:2px solid var(--lc); outline-offset:1px; }
+  .chip input[type=color] { width:14px; height:12px; border-radius:3px; }
+  .layer .minrow { display:flex; align-items:center; gap:6px; margin-top:5px; font-size:12px; }
   .layer .minrow input[type=range] { flex:1; min-width:60px; }
-  .layer .nval { min-width:22px; text-align:right; font-variant-numeric:tabular-nums; }
-  .layer.off .lopts { opacity:.45; }
+  .layer .minrow input[type=range]:disabled { opacity:.35; }
+  .layer .nval { min-width:40px; text-align:right; font-variant-numeric:tabular-nums; color:var(--muted); }
   .hdg-ico { background:none; border:none; }
   #phwarn { position:absolute; top:10px; left:50%; transform:translateX(-50%); z-index:1000; display:none;
             max-width:calc(100% - 120px); background:#b42318; color:#fff; border-radius:6px; padding:6px 12px;
@@ -595,6 +601,9 @@ class Track {
     this.group = L.layerGroup().addTo(map);
     this.previewGroup = L.layerGroup().addTo(map);
     this.line = L.polyline([], { weight: 4 }).addTo(this.group);
+    // traces / pathHistory: faint dotted connector from the latest pathPoint to the eventPosition /
+    // referencePosition (the anchor), which is not a recorded point of the path itself
+    this.link = L.polyline([], { weight: 3, opacity: .5, dashArray: '1 7', lineCap: 'round' }).addTo(this.group);
     this.markers = new Map();
     this.previewLL = [];
     this.restyle();
@@ -602,6 +611,7 @@ class Track {
   get color() { return opts[this.k].color; }
   restyle() {
     this.line.setStyle({ color: this.color });
+    this.link.setStyle({ color: this.color });
     this.reset();
     this.setPreview(this.previewLL);
   }
@@ -624,7 +634,15 @@ class Track {
       }
       vis = pts.slice(i);
     }
-    this.line.setLatLngs([...vis.map(p => [p.lat, p.lon]), ...(head ? [[head.lat, head.lon]] : [])]);
+    const ll = [...vis.map(p => [p.lat, p.lon]), ...(head ? [[head.lat, head.lon]] : [])];
+    const last = vis[vis.length - 1];
+    if (!head && last && last.anchor) {   // anchor at the end: connected by the dotted link only
+      this.line.setLatLngs(ll.slice(0, -1));
+      this.link.setLatLngs(ll.length > 1 ? ll.slice(-2) : []);
+    } else {
+      this.line.setLatLngs(ll);
+      this.link.setLatLngs([]);
+    }
     const marked = p => !p.anchor && !p.via && (o.points || o.labels || (o.heading && p.hdg != null));
     const want = new Set(vis.filter(marked).map(p => p.id));
     for (const [id, m] of this.markers) if (!want.has(id)) { this.group.removeLayer(m); this.markers.delete(id); }
@@ -830,7 +848,9 @@ function buildStatic() {
     drawEventZone(u, staticLayers.ez);
     u.traces.forEach((tr, ti) => {
       if (!tr.length) return;
-      L.polyline([[u.lat, u.lon], ...tr.map(q => [q[0], q[1]])], { color: ot.color, weight: 3 }).addTo(staticLayers.dtr);
+      L.polyline(tr.map(q => [q[0], q[1]]), { color: ot.color, weight: 3 }).addTo(staticLayers.dtr);
+      L.polyline([[u.lat, u.lon], [tr[0][0], tr[0][1]]], { color: ot.color, weight: 3, opacity: .5, dashArray: '1 7', lineCap: 'round' })
+        .addTo(staticLayers.dtr);
       if (!ot.points && !ot.labels) return;
       tr.forEach((q, k) => {
         const m = ot.points
@@ -1213,27 +1233,34 @@ function renderLayerCards() {
     const o = opts[k], div = document.createElement('div');
     div.className = 'layer';
     div.dataset.layer = k;
-    const cb = (opt, text) => `<label><input type="checkbox" data-opt="${opt}" ${o[opt] ? 'checked' : ''}> ${text}</label>`;
+    div.style.setProperty('--lc', `var(--c-${k})`);
+    // option chips: short text, the full meaning in the tooltip
+    const chip = (opt, text, tip, extra = '') =>
+      `<label class="chip" title="${tip}"><input type="checkbox" data-opt="${opt}" ${o[opt] ? 'checked' : ''}>${text}${extra}</label>`;
     const extras = k === 'denm'
-      ? `<label><input type="checkbox" data-opt="ez" ${o.ez ? 'checked' : ''}> eventZone
-           <input type="color" data-opt="ezColor" value="${o.ezColor}" title="eventZone colour"></label>` + cb('heading', 'eventPositionHeading') + cb('smooth', 'smoothing')
-      : k === 'cam' ? cb('smooth', 'smoothing') + cb('heading', 'heading') : '';
+      ? chip('ez', 'eventZone', 'eventZone of the latest DENM (hidden in the minimal view)',
+             `<input type="color" data-opt="ezColor" value="${o.ezColor}" title="eventZone colour">`) +
+        chip('heading', 'heading', 'eventPositionHeading arrows') +
+        chip('smooth', 'smooth', 'smoothed eventPosition track (Kalman + RTS)')
+      : k === 'cam' ? chip('heading', 'heading', 'CAM heading arrows') +
+                      chip('smooth', 'smooth', 'smoothed CAM track (Kalman + RTS)') : '';
     div.innerHTML = `
-      <div class="lhead">
+      <div class="lhead" title="${d.sub}">
         <label><input type="checkbox" data-opt="show" ${o.show ? 'checked' : ''}>${d.title}</label>
         <input type="color" data-opt="color" value="${o.color}" title="colour">
-        <span class="muted">${d.sub}</span>
       </div>
-      <div class="lopts">
-        ${cb('points', 'points')}${cb('labels', d.lblText)}
-        ${cb('preview', 'full preview')}${extras}
-        <div class="minrow">${cb('minimal', 'minimal: last')}
+      <div class="lbody">
+        <div class="chips">
+          ${chip('points', 'points', 'points (off: line only)')}${chip('labels', 'labels', 'labels: ' + d.lblText)}
+          ${chip('preview', 'preview', 'full preview: faint dashed line of the whole replay')}${extras}
+        </div>
+        <div class="minrow">${chip('minimal', 'minimal', 'minimal view: only the last n points')}
           <input type="range" data-opt="n" min="1" max="${MINIMAL_MAX}" value="${o.n}" ${o.minimal ? '' : 'disabled'}>
-          <span class="nval">${o.n}</span> points</div>
+          <span class="nval">${o.n} pts</span></div>
       </div>`;
     div.querySelectorAll('input').forEach(inp => inp.oninput = () => {
       const opt = inp.dataset.opt;
-      if (opt === 'n') { o.n = +inp.value; div.querySelector('.nval').textContent = o.n; }
+      if (opt === 'n') { o.n = +inp.value; div.querySelector('.nval').textContent = `${o.n} pts`; }
       else if (opt === 'color' || opt === 'ezColor') { o[opt] = inp.value; applyColors(); }
       else o[opt] = inp.checked;
       if (opt === 'minimal') div.querySelector('input[data-opt=n]').disabled = !o.minimal;
