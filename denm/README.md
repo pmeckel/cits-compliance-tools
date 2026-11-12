@@ -157,6 +157,9 @@ connection for the map tiles):
   time, the current sequenceNumber (and termination), `eventPositionHeading`,
   `eventSpeed`, the distance to the CAM and the number of trace / pathHistory
   points shown
+- **click on the map** = play / pause (a short, faint play / pause sign appears
+  on the map); clicks on points (popups), the click that closes a popup and
+  double clicks (zoom) do not toggle
 - **CAM matching**: all CAMs of the capture are decoded (ASN.1 in
   [`../cam/ASN/`](../cam/ASN/)) and the CAM station that matches the DENMs best
   is selected automatically. Every candidate gets a score out of 100 with the
@@ -203,7 +206,7 @@ connection for the map tiles):
   Each layer card shows the options as compact toggle chips (*points*,
   *labels*, *preview*, *eventZone* / *heading* / *smooth* where available,
   *minimal* with its slider); the full meaning of each chip is in its tooltip.
-  The options of a hidden layer are collapsed. In DENM traces and CAM
+  The options of a hidden layer stay open (faded). In DENM traces and CAM
   pathHistory, the step from the latest recorded point to the eventPosition /
   referencePosition is drawn as a faint dotted line in the layer colour, since
   it is not part of the recorded path.

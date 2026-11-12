@@ -470,7 +470,7 @@ HTML_TEMPLATE = r'''<!doctype html>
   .layer input[type=color] { width:20px; height:18px; padding:0; border:1px solid var(--line); border-radius:4px;
                              background:none; cursor:pointer; flex:none; }
   .layer .lbody { margin-top:5px; }
-  .layer.off .lbody { display:none; }
+  .layer.off .lbody { opacity:.5; }
   .chips { display:flex; flex-wrap:wrap; gap:4px; }
   .chip { position:relative; display:inline-flex; align-items:center; gap:4px; padding:1px 8px; font-size:12px;
           border:1px solid var(--line); border-radius:10px; cursor:pointer; user-select:none; color:var(--muted); }
@@ -483,6 +483,12 @@ HTML_TEMPLATE = r'''<!doctype html>
   .layer .minrow input[type=range]:disabled { opacity:.35; }
   .layer .nval { min-width:40px; text-align:right; font-variant-numeric:tabular-nums; color:var(--muted); }
   .hdg-ico { background:none; border:none; }
+  #ppflash { position:absolute; top:50%; left:50%; width:64px; height:64px; margin:-32px 0 0 -32px; z-index:1000;
+             border-radius:50%; background:rgba(0,0,0,.35); pointer-events:none; opacity:0;
+             display:flex; align-items:center; justify-content:center; }
+  #ppflash svg { width:28px; height:28px; fill:rgba(255,255,255,.9); }
+  #ppflash.go { animation:ppflash .7s ease-out; }
+  @keyframes ppflash { 0% { opacity:1; transform:scale(.85); } 100% { opacity:0; transform:scale(1.25); } }
   #phwarn { position:absolute; top:10px; left:50%; transform:translateX(-50%); z-index:1000; display:none;
             max-width:calc(100% - 120px); background:#b42318; color:#fff; border-radius:6px; padding:6px 12px;
             font-size:13px; box-shadow:0 2px 8px rgba(0,0,0,.4); pointer-events:none; }
@@ -1292,6 +1298,34 @@ function play() {
 function pause() { st.playing = false; $('play').textContent = 'Play'; }
 
 $('play').onclick = () => st.playing ? pause() : play();
+
+// A single click on the map toggles play / pause, with a short, faint play / pause sign on the map.
+// Not on a click on a point (popup), not on the click that closes an open popup, not on a double click
+// (zoom): the single click is only acted on after the double click time.
+const ppFlash = document.createElement('div');
+ppFlash.id = 'ppflash';
+map.getContainer().appendChild(ppFlash);
+function flashPlayPause(playing) {
+  ppFlash.innerHTML = playing ? '<svg viewBox="0 0 24 24"><path d="M7 4.5v15l12.5-7.5z"/></svg>'
+                              : '<svg viewBox="0 0 24 24"><path d="M6 4.5h4.2v15H6zM13.8 4.5H18v15h-4.2z"/></svg>';
+  ppFlash.classList.remove('go');
+  void ppFlash.offsetWidth;   // restart the animation
+  ppFlash.classList.add('go');
+}
+let popupOpen = 0, popupWasOpen = false, clickTimer = null;
+map.on('popupopen', () => popupOpen++);
+map.on('popupclose', () => popupOpen = Math.max(0, popupOpen - 1));
+map.on('preclick', () => popupWasOpen = popupOpen > 0);   // before Leaflet closes the popup
+map.on('click', e => {
+  const tgt = e.originalEvent && e.originalEvent.target;
+  if (popupWasOpen || (tgt && tgt.classList && tgt.classList.contains('leaflet-interactive')) || !st.total) return;
+  clearTimeout(clickTimer);
+  clickTimer = setTimeout(() => {
+    st.playing ? pause() : play();
+    flashPlayPause(st.playing);
+  }, 250);
+});
+map.on('dblclick', () => clearTimeout(clickTimer));
 $('restart').onclick = () => { st.t = 0; render(); };
 $('timeline').oninput = () => { st.t = $('timeline').value / 10000 * st.total; render(); };
 $('speed').oninput = () => {
